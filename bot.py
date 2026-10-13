@@ -1,13 +1,15 @@
 import os, json, time, re, requests
-from google import genai
-from google.genai import types
+from groq import Groq
 
 SYSTEM = "0772023014"
 TOKEN = f"{SYSTEM}:{os.environ['YEMOT_PASSWORD']}"
 API = "https://www.call2all.co.il/ym/api"
 IN_EXT, OUT_EXT = "2", "1"
 STATE_PATH = "ivr2:/9/state.json"   # המצב נשמר בימות, לא ב-GitHub
-MODEL = "gemini-flash-latest"
+STT_MODEL = "whisper-large-v3-turbo"
+LLM_MODEL = "llama-3.3-70b-versatile"
+SEARCH_MODEL = "groq/compound"   # מודל עם חיפוש ברשת מובנה
+STATE_VERSION = 3
 MAX_AGE_H = 24
 
 # >>> ערוך כאן את הכתבים: כינוי וסגנון <<<
@@ -20,14 +22,17 @@ RULES = ("כתוב בעברית נקייה, בלשון המקובלת בציבו
          "אל תוסיף שום פרט שלא מופיע במקורות. אל תכלול שמות של אנשים פרטיים. "
          "פרט לא מאומת יסומן 'על פי דיווחים'.")
 
-client = genai.Client(api_key=os.environ['GEMINI_API_KEY'])
+client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
-def ask(system, user, search=False):
-    cfg = types.GenerateContentConfig(system_instruction=system)
-    if search:
-        cfg.tools = [types.Tool(google_search=types.GoogleSearch())]
-    r = client.models.generate_content(model=MODEL, contents=user, config=cfg)
-    return r.text or ""
+def ask(system, user, search=False, as_json=False):
+    kw = {}
+    if as_json and not search:
+        kw["response_format"] = {"type": "json_object"}
+    r = client.chat.completions.create(
+        model=SEARCH_MODEL if search else LLM_MODEL,
+        messages=[{"role": "system", "content": system},
+                  {"role": "user", "content": user}], **kw)
+    return r.choices[0].message.content or ""
 
 def jparse(t):
     t = re.sub(r"```(json)?", "", t).strip()
@@ -47,27 +52,31 @@ def y_text_upload(path, text):
 def load_state():
     try:
         s = json.loads(y_download(STATE_PATH))
-        if "pending" in s:
+        if "pending" in s and s.get("v") == STATE_VERSION:
             return s
     except Exception:
         pass
-    return {"seen": [], "pending": [], "held": [], "next": 0, "rr": 0}
+    return {"v": STATE_VERSION, "seen": [], "pending": [], "held": [], "next": 0, "rr": 0, "last_decide": 0}
 
 def save_state(s):
     y_text_upload(STATE_PATH, json.dumps(s, ensure_ascii=False))
 
 # ---------- שלבים ----------
 def transcribe(raw):
-    r = client.models.generate_content(model=MODEL, contents=[
-        types.Part.from_bytes(data=raw, mime_type="audio/wav"),
-        "תמלל במדויק את ההקלטה בעברית. החזר רק את הטקסט."])
-    return r.text or ""
+    r = client.audio.transcriptions.create(file=("a.wav", raw), model=STT_MODEL, language="he")
+    return getattr(r, "text", r)
 
 def triage(text):
     p = ('סנן הודעה של מאזין למערכת חדשות. החזר JSON בלבד: '
          '{"newsworthy":bool,"spam":bool,"sensitive":bool (פטירה/פציעה/פיגוע/אדם פרטי/לשון הרע),'
          '"topic":"","summary":"","facts":[]}\n\nהודעה:\n' + text)
-    return jparse(ask("אתה עורך חדשות זהיר.", p))
+    return jparse(ask("אתה עורך חדשות זהיר.", p, as_json=True))
+
+def analyze_audio(raw):
+    return triage(transcribe(raw))
+
+def is_quota(e):
+    return "429" in str(e) or "rate_limit" in str(e).lower()
 
 def decide(pending):
     items = [{"id": i["id"], "topic": i["topic"], "summary": i["summary"],
@@ -75,7 +84,7 @@ def decide(pending):
     p = ('קבץ את ההודעות לפי אירוע. החזר JSON: {"groups":[{"ids":[],"ready":bool}]}. '
          'ready=true רק אם יש לפחות 2 הודעות על אותו אירוע, או הודעה אחת בת 15 דקות ומעלה. '
          'השאר ready=false.\n' + json.dumps(items, ensure_ascii=False))
-    return jparse(ask("אתה עורך חדשות זהיר.", p))["groups"]
+    return jparse(ask("אתה עורך חדשות זהיר.", p, as_json=True))["groups"]
 
 def write_story(group, reporter):
     src = json.dumps([{"summary": g["summary"], "facts": g["facts"]} for g in group], ensure_ascii=False)
@@ -93,40 +102,65 @@ def write_story(group, reporter):
 def main():
     s = load_state()
     now = time.time()
+    quota_hit = False
+    new = 0
 
     for name in y_list(IN_EXT):
         if name in s["seen"]:
             continue
-        s["seen"].append(name)
         try:
-            t = transcribe(y_download(f"ivr2:/{IN_EXT}/{name}"))
-            m = triage(t)
+            m = analyze_audio(y_download(f"ivr2:/{IN_EXT}/{name}"))
         except Exception as e:
-            print("fail", name, e); continue
-        if m["spam"] or not m["newsworthy"]:
+            print("fail", name, e)
+            if is_quota(e):
+                quota_hit = True
+                break
+            s["seen"].append(name)
+            continue
+        s["seen"].append(name)
+        new += 1
+        m.pop("transcript", None)
+        if m.get("spam") or not m.get("newsworthy"):
             continue
         m.update(id=name, ts=now)
-        (s["held"] if m["sensitive"] else s["pending"]).append(m)
+        (s["held"] if m.get("sensitive") else s["pending"]).append(m)
 
     s["pending"] = [p for p in s["pending"] if now - p["ts"] < MAX_AGE_H * 3600]
 
-    if s["pending"]:
+    if s["pending"] and not quota_hit and (new or now - s.get("last_decide", 0) > 1200):
+        s["last_decide"] = now
+        try:
+            groups = decide(s["pending"])
+        except Exception as e:
+            print("decide fail", e); groups = []
+            quota_hit = is_quota(e)
         by_id = {p["id"]: p for p in s["pending"]}
-        for g in decide(s["pending"]):
-            if not g.get("ready"):
+        for g in groups:
+            if quota_hit or not g.get("ready"):
                 continue
             group = [by_id[i] for i in g["ids"] if i in by_id]
             if not group:
                 continue
             rep = REPORTERS[s["rr"] % len(REPORTERS)]
-            res = write_story(group, rep)
+            try:
+                res = write_story(group, rep)
+            except Exception as e:
+                print("write fail", e)
+                if is_quota(e):
+                    quota_hit = True
+                continue
             if not res.get("publishable"):
+                for p in group:
+                    p["tries"] = p.get("tries", 0) + 1
                 continue
             n = s["next"]; s["next"] += 1; s["rr"] += 1
             y_text_upload(f"ivr2:/{OUT_EXT}/{n:03d}.tts", res["text"])
             s["pending"] = [p for p in s["pending"] if p["id"] not in g["ids"]]
             print("published", n)
+        s["pending"] = [p for p in s["pending"] if p.get("tries", 0) < 3]
 
+    if quota_hit:
+        print("QUOTA: המכסה החינמית נגמרה, ננסה שוב בהרצה הבאה")
     if s["held"]:
         print("ממתינות לאישור ידני:", len(s["held"]))
     save_state(s)
