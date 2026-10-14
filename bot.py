@@ -8,7 +8,10 @@ IN_EXT, OUT_EXT = "2", "1"
 STATE_PATH = "ivr2:/9/state.json"   # המצב נשמר בימות, לא ב-GitHub
 STT_MODEL = "whisper-large-v3-turbo"
 SEARCH_MODEL = "groq/compound"   # מודל עם חיפוש ברשת מובנה
-STATE_VERSION = 4
+STATE_VERSION = 5
+# הודעה שמזכירה אחד מהשמות האלה לא תעלה. אפשר להוסיף כאן כתיבים נוספים
+BLOCKED_NAMES = ["מוישי", "משה לייב פרידמן", "משה ליב פרידמן", "משה לייב פריידמן", "משה ליב פריידמן"]
+HOLD_SENSITIVE = True   # True = דיווחי פטירה/פציעה/פיגוע לא עולים אוטומטית. False = גם הם עולים
 MAX_AGE_H = 24
 
 # >>> ערוך כאן את הכתבים: כינוי וסגנון <<<
@@ -18,7 +21,8 @@ REPORTERS = [
     {"name": "כתב ג'", "style": "רשמי, בנימה של מבזק חדשות."},
 ]
 RULES = ("כתוב בעברית נקייה, בלשון המקובלת בציבור החסידי. "
-         "אל תוסיף שום פרט שלא מופיע במקורות. אל תכלול שמות של אנשים פרטיים. "
+         "אל תוסיף שום פרט שלא מופיע במקורות, ואל תוסיף ביקורת או שבח שלא נאמרו. "
+         "שמות אנשים מהמקורות נשארים כפי שנאמרו. "
          "פרט לא מאומת יסומן 'על פי דיווחים'.")
 
 client = Groq(api_key=os.environ["GROQ_API_KEY"])
@@ -82,13 +86,23 @@ def transcribe(raw):
     return getattr(r, "text", r)
 
 def triage(text):
-    p = ('סנן הודעה של מאזין למערכת חדשות. החזר JSON בלבד: '
-         '{"newsworthy":bool,"spam":bool,"sensitive":bool (פטירה/פציעה/פיגוע/אדם פרטי/לשון הרע),'
+    p = ('סנן הודעה של מאזין למערכת חדשות חסידית. כל הודעה עם תוכן מתפרסמת: '
+         'ידיעות, סקופים, שמועות, עדכונים על חצרות, אישים ואירועים. החזר JSON בלבד: '
+         '{"empty":bool (שקט, רעש או לא ברור בכלל),'
+         '"against_system":bool (פגיעה, ביקורת, קללה או לשון הרע נגד מנהל המערכת, המערכת או הכתבים שלה),'
+         '"sensitive":bool (דיווח על פטירה, פציעה קשה או פיגוע בלבד),'
          '"topic":"","summary":"","facts":[]}\n\nהודעה:\n' + text)
-    return jparse(ask("אתה עורך חדשות זהיר.", p, as_json=True))
+    return jparse(ask("אתה עורך חדשות.", p, as_json=True))
+
+def norm(t):
+    return " ".join(re.sub(r"[^\u05d0-\u05ea ]", " ", t).split())
 
 def analyze_audio(raw):
-    return triage(transcribe(raw))
+    text = transcribe(raw)
+    t = norm(text)
+    if any(norm(n) in t for n in BLOCKED_NAMES):
+        return {"blocked_name": True}
+    return triage(text)
 
 def is_quota(e):
     return "429" in str(e) or "rate_limit" in str(e).lower()
@@ -108,7 +122,8 @@ def write_story(group, reporter):
          "חפש ברשת אימות והשלמות באתרי חדשות ומקורות רשמיים. "
          + ("יש כמה הודעות, אפשר לפרסם גם בלי אימות מהרשת. " if multi else
             "זו הודעה בודדת: נסח אותה בזהירות, כ'על פי דיווח שהגיע למערכת' אם לא אומתה ברשת, "
-            "ו-publishable=true. רק אם המקורות ברשת סותרים את הידיעה או שהיא אינה חדשותית: publishable=false. ")
+            "ו-publishable=true. רק אם המקורות ברשת סותרים את הידיעה בבירור: publishable=false. "
+            "אל תחסום ידיעה רק בגלל שלא נמצאה ברשת. ")
          + 'החזר JSON בלבד: {"publishable":bool,"text":"הידיעה, 3-5 משפטים, בפתיח: כאן '
          + reporter["name"] + '"}')
     return jparse(ask("אתה כתב במערכת חדשות טלפונית.", p, search=True))
@@ -137,14 +152,20 @@ def main():
             continue
         s["seen"].append(name)
         new += 1
-        print("msg", name, "חדשותי" if m.get("newsworthy") else "לא-חדשותי",
-              "ספאם" if m.get("spam") else "", "רגיש-לאישור-ידני" if m.get("sensitive") else "",
+        if m.get("blocked_name"):
+            print("msg", name, "שם-חסום-נחסם")
+            continue
+        hold = bool(m.get("sensitive")) and HOLD_SENSITIVE
+        print("msg", name,
+              "ריק" if m.get("empty") else "",
+              "נגד-המערכת-נחסם" if m.get("against_system") else "",
+              "רגיש-ממתין-לאישור" if hold else "",
               "|", m.get("topic", ""))
         m.pop("transcript", None)
-        if m.get("spam") or not m.get("newsworthy"):
+        if m.get("empty") or m.get("against_system"):
             continue
         m.update(id=name, ts=now)
-        (s["held"] if m.get("sensitive") else s["pending"]).append(m)
+        (s["held"] if hold else s["pending"]).append(m)
 
     s["pending"] = [p for p in s["pending"] if now - p["ts"] < MAX_AGE_H * 3600]
 
