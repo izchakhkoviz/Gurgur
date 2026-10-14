@@ -5,26 +5,26 @@ SYSTEM = "0772023014"
 TOKEN = f"{SYSTEM}:{os.environ['YEMOT_PASSWORD']}"
 API = "https://www.call2all.co.il/ym/api"
 IN_EXT = "2"
-OUT_EXT = "1"           # שלוחה להודעות הקשורות לחסידות גור
-UNRELATED_EXT = "0/1"   # שלוחה 1 בתוך 0 להודעות שאינן קשורות לחסידות גור
+OUT_EXT = "1"           # שלוחה 1: אך ורק עדכונים חדשותיים שוטפים על חסידות גור
+UNRELATED_EXT = "0/1"   # שלוחה 0/1: שאלות, בקשות עדכון, בירורים ותכנים כלליים
 
-STATE_PATH = "ivr2:/9/state.json"   # המצב נשמר בימות
+STATE_PATH = "ivr2:/9/state.json"
 STT_MODEL = "whisper-large-v3-turbo"
-STATE_VERSION = 12  # הגרסה עודכנה כדי לאפס ולהתחיל נקי מעכשיו בלבד
+STATE_VERSION = 13
 
 # הודעה שמזכירה אחד מהשמות האלה לא תעלה
-BLOCKED_NAMES = ["מוישי", "משה לייב פרידמן", "משה ליב פרידמן", "משה לייב פריידמן", "mשה ליב פריידמן"]
-HOLD_SENSITIVE = True   # True = דיווחי פטירה/פציעה/פיגוע בלבד ממתינים לאישור
+BLOCKED_NAMES = ["מוישי", "משה לייב פרידמן", "משה ליב פרידמן", "משה לייב פריידמן"]
+HOLD_SENSITIVE = True   # דיווחי פטירה/פציעה/פיגוע בלבד ממתינים לאישור
 MAX_AGE_H = 24
 
-RULES = ("אתה עורך מקצועי במערכת ניוז טלפונית חסידית. "
-         "תפקידך להאזין לתמליל ההודעה ולנסח אותה מחדש בצורה קולחת, אנושית, זורמת ומקצועית לחלוטין, "
-         "כאילו עורך תוכן אנושי ניסח אותה עבור השידור. "
+# הנחיות עריכה משודרגות בסגנון "מבזקים פלוס" / "הפרגוד"
+RULES = ("אתה עורך חדשות ראשי בקו טלפוני חסידי מוביל (בסגנון מבזקי חדשות והפרגוד). "
+         "תפקידך להאזין לתמליל ההודעה ולנסח אותה כמבזק חדשות שוטף, קולח, אנושי ומקצועי לחלוטין. "
          "הקפד על לשון נקייה ומכובדת, ושמור על כבוד כ\"ק מרן אדמו\"ר שליט\"א, הרבנים והחצר החסידית. "
          "אין להשתמש בפתיחים מלאכותיים כגון 'כתב המערכת' או 'כאן כתב'. "
-         "התאם את ניסוח הידיעה בדיוק לאופי ההודעה המקורית: "
-         "אם המאזין שואל שאלה או מברר פרט - נסח את הדיווח כשאלה/פניית מאזינים (לדוגמה: 'מאזינים מבקשים לדעת...'). "
-         "אם זו בקשת עזרה/מידע, הודעת מערכת או סקופ חדשותי - נסח בהתאם לתוכן בצורה אנושית וטבעית.")
+         "התאם את הניסוח לאופי המסר: "
+         "אם מדובר בעדכון שוטף – נסח כמבזק אקטואלי חד וברור. "
+         "אם מדובר בבקשת עדכון, בירור פרטים או שאלה של מאזין – נסח זאת כפנייה/בירור מטעם המאזינים ('מאזינים מבקשים לברר...').")
 
 client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
@@ -54,7 +54,6 @@ def ask(system, user, as_json=False):
         model=LLM_MODEL,
         messages=[{"role": "system", "content": system},
                   {"role": "user", "content": user}], **kw)
-    # השהיה קטנה למניעת חריגת OTPM (Rate limit)
     time.sleep(3)
     return r.choices[0].message.content or ""
 
@@ -92,18 +91,16 @@ def load_state():
             return s
     except Exception:
         pass
-
-    # מצב חדש לגמרי: גורם לבוט להתעלם מכל מה שכבר נמצא בשלוחה 2 ולהתחיל רק מעכשיו!
+    
     current_files = []
     try:
         current_files = y_list(IN_EXT)
     except Exception:
         pass
-
-    print(text := f"אתחול מצב: מתעלם מ-{len(current_files)} קבצים ישנים בשלוחה 2, ועובד רק מעכשיו.")
+    
     return {
         "v": STATE_VERSION,
-        "seen": current_files,  # מסמן את כל הקבצים הקיימים כ"נצפו" כדי לא לגעת בהם
+        "seen": current_files,
         "pending": [],
         "held": [],
         "next": 242,
@@ -116,16 +113,18 @@ def save_state(s):
 
 # ---------- שלבים ----------
 def transcribe(raw):
+    # משתמש במודל המתקדם ביותר של Whisper לדיוק מירבי בזיהוי דיבור
     r = client.audio.transcriptions.create(file=("a.wav", raw), model=STT_MODEL, language="he")
     return getattr(r, "text", r)
 
 def triage(text):
-    p = ('נתח הודעה של מאזין. החזר JSON בלבד:\n'
+    p = ('נתח הודעת מאזין לקו חדשות. החזר JSON בלבד:\n'
          '{\n'
          '  "empty": bool (שקט, רעש או לא מובן),\n'
          '  "against_system": bool (פגיעה, זלזול, ביקורת או קללה נגד הנהלת/מערכת הקו),\n'
          '  "sensitive": bool (דיווח על פטירה, פציעה קשה או פיגוע בלבד),\n'
-         '  "related_to_gur": bool (האם יש קשר, אפילו רחוק, לחסידות גור, מוסדותיה, אנשיה, אירועיה או נושאים הנוגעים לה),\n'
+         '  "related_to_gur": bool (האם יש קשר לחסידות גור, מוסדותיה, אנשיה או אירועיה),\n'
+         '  "is_pure_update": bool (האם מדובר בעדכון חדשותי שוטף נטו, ולא בשאלה, בקשת מידע או בירור פרטים),\n'
          '  "topic": "", "summary": "", "facts": []\n'
          '}\n\nהודעה:\n' + text)
     return jparse(ask("אתה עורך תוכן חסידי.", p, as_json=True))
@@ -158,8 +157,8 @@ def write_story(group):
     src = json.dumps([{"summary": g["summary"], "facts": g["facts"]} for g in group], ensure_ascii=False)
     p = (f"{RULES}\n\n"
          f"מקורות מהמאזינים:\n{src}\n\n"
-         "נסח את הידיעה בצורה אנושית ומקצועית לחלוטין. "
-         'החזר JSON בלבד: {"publishable":true, "text":"טקסט הידיעה המנוסח בצורה טבעית וקולחת"}')
+         "נסח את הידיעה כמבזק חדשות טלפוני קולח ומקצועי. "
+         'החזר JSON בלבד: {"publishable":true, "text":"טקסט הידיעה המנוסח"}')
     return jparse(ask("אתה עורך ראשי במערכת ניוז חסידית.", p, as_json=True))
 
 # ---------- ריצה ----------
@@ -193,8 +192,7 @@ def main():
         print("msg", name,
               "ריק" if m.get("empty") else "",
               "נגד-המערכת-נחסם" if m.get("against_system") else "",
-              "רגיש-ממתין-לאישור" if hold else "",
-              "קשור לחסידות גור:" if m.get("related_to_gur") else "לא קשור לגור")
+              "רגיש-ממתין-לאישור" if hold else "")
         m.pop("transcript", None)
         if m.get("empty") or m.get("against_system"):
             continue
@@ -229,18 +227,22 @@ def main():
                     p["tries"] = p.get("tries", 0) + 1
                 continue
 
+            # תנאי מוקדם לשלוחה 1: גם קשור לגור וגם מדובר בעדכון חדשותי שוטף נטו (לא שאלה/בקשה/בירור)
             is_gur = any(p.get("related_to_gur") for p in group)
+            is_pure_update = all(p.get("is_pure_update", True) for p in group)
 
-            if is_gur:
+            if is_gur and is_pure_update:
+                # שלוחה 1: אך ורק עדכונים שוטפים על חסידות גור
                 n = s["next"]
                 s["next"] += 1
                 target_path = f"ivr2:/{OUT_EXT}/{n:03d}.tts"
-                print("published (גור - שלוחה 1)", f"{n:03d}.tts")
+                print("published (עדכון שוטף - שלוחה 1)", f"{n:03d}.tts")
             else:
+                # שלוחה 0/1: שאלות, בקשות עדכון, בירורים או תכנים כלליים
                 n = s.get("next_unrelated", 1)
                 s["next_unrelated"] = n + 1
                 target_path = f"ivr2:/{UNRELATED_EXT}/{n:03d}.tts"
-                print("published (לא קשור - שלוחה 0/1)", f"{n:03d}.tts")
+                print("published (בירורים/לא קשור - שלוחה 0/1)", f"{n:03d}.tts")
 
             y_text_upload(target_path, res["text"])
             s["pending"] = [p for p in s["pending"] if p["id"] not in g["ids"]]
