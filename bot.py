@@ -7,8 +7,7 @@ API = "https://www.call2all.co.il/ym/api"
 IN_EXT, OUT_EXT = "2", "1"
 STATE_PATH = "ivr2:/9/state.json"   # המצב נשמר בימות, לא ב-GitHub
 STT_MODEL = "whisper-large-v3-turbo"
-SEARCH_MODEL = "groq/compound"   # מודל עם חיפוש ברשת מובנה
-STATE_VERSION = 5
+STATE_VERSION = 6
 # הודעה שמזכירה אחד מהשמות האלה לא תעלה. אפשר להוסיף כאן כתיבים נוספים
 BLOCKED_NAMES = ["מוישי", "משה לייב פרידמן", "משה ליב פרידמן", "משה לייב פריידמן", "משה ליב פריידמן"]
 HOLD_SENSITIVE = True   # True = דיווחי פטירה/פציעה/פיגוע לא עולים אוטומטית. False = גם הם עולים
@@ -30,9 +29,13 @@ client = Groq(api_key=os.environ["GROQ_API_KEY"])
 PREFERRED = ["openai/gpt-oss-120b", "openai/gpt-oss-20b",
              "llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
 
+IDS = set()
+
 def pick_model():
+    global IDS
     try:
         ids = {m.id for m in client.models.list().data}
+        IDS = ids
     except Exception as e:
         print("models list fail", e)
         return PREFERRED[0]
@@ -44,11 +47,13 @@ def pick_model():
 
 LLM_MODEL = pick_model()
 print("LLM model:", LLM_MODEL)
+SEARCH_MODEL = next((m for m in ["groq/compound", "groq/compound-mini", "compound-beta"] if m in IDS), None)
+print("SEARCH model:", SEARCH_MODEL)
 
 def ask(system, user, search=False, as_json=False):
     kw = {}
     r = client.chat.completions.create(
-        model=SEARCH_MODEL if search else LLM_MODEL,
+        model=SEARCH_MODEL if (search and SEARCH_MODEL) else LLM_MODEL,
         messages=[{"role": "system", "content": system},
                   {"role": "user", "content": user}], **kw)
     return r.choices[0].message.content or ""
@@ -102,7 +107,11 @@ def analyze_audio(raw):
     t = norm(text)
     if any(norm(n) in t for n in BLOCKED_NAMES):
         return {"blocked_name": True}
-    return triage(text)
+    if len(t) < 6:
+        return {"empty": True}
+    m = triage(text)
+    m["empty"] = False
+    return m
 
 def is_quota(e):
     return "429" in str(e) or "rate_limit" in str(e).lower()
@@ -119,7 +128,7 @@ def write_story(group, reporter):
     multi = len(group) > 1
     p = (f"{RULES}\nסגנון הכתב ({reporter['name']}): {reporter['style']}\n"
          f"מקורות מהמאזינים ({len(group)} הודעות):\n{src}\n\n"
-         "חפש ברשת אימות והשלמות באתרי חדשות ומקורות רשמיים. "
+         "חפש ברשת אימות והשלמות באתרי חדשות ומקורות רשמיים. אם אין לך גישה לחיפוש ברשת, כתוב רק על סמך המקורות מהמאזינים. "
          + ("יש כמה הודעות, אפשר לפרסם גם בלי אימות מהרשת. " if multi else
             "זו הודעה בודדת: נסח אותה בזהירות, כ'על פי דיווח שהגיע למערכת' אם לא אומתה ברשת, "
             "ו-publishable=true. רק אם המקורות ברשת סותרים את הידיעה בבירור: publishable=false. "
@@ -159,8 +168,7 @@ def main():
         print("msg", name,
               "ריק" if m.get("empty") else "",
               "נגד-המערכת-נחסם" if m.get("against_system") else "",
-              "רגיש-ממתין-לאישור" if hold else "",
-              "|", m.get("topic", ""))
+              "רגיש-ממתין-לאישור" if hold else "")
         m.pop("transcript", None)
         if m.get("empty") or m.get("against_system"):
             continue
