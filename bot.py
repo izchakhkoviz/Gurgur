@@ -10,7 +10,7 @@ UNRELATED_EXT = "0/1"   # שלוחה 0/1: שאלות, בקשות עדכון, ב�
 
 STATE_PATH = "ivr2:/9/state.json"
 STT_MODEL = "whisper-large-v3-turbo"
-STATE_VERSION = 18      # גרסה 18: הרצה חד-פעמית לשלושת הקבצים האחרונים
+STATE_VERSION = 19      # גרסה 19: תיקון מעקב והעלאה מיידית
 
 # הודעה שמזכירה אחד מהשמות האלה לא תעלה
 BLOCKED_NAMES = ["מוישי", "משה לייב פרידמן", "משה ליב פרידמן", "משה לייב פריידמן"]
@@ -53,7 +53,7 @@ def ask(system, user, as_json=False):
         model=LLM_MODEL,
         messages=[{"role": "system", "content": system},
                   {"role": "user", "content": user}], **kw)
-    time.sleep(6)
+    time.sleep(4)
     return r.choices[0].message.content or ""
 
 def jparse(t):
@@ -98,11 +98,11 @@ def load_state():
     except Exception:
         pass
 
-    # בהרצה הראשונה בגרסה 18: לוקחים את 3 הקבצים האחרונים ומכניסים לעיבוד מחודש!
+    # מעבדים מחדש את 3 הקבצים האחרונים
     last_3 = all_files[-3:] if len(all_files) >= 3 else all_files
     seen_files = [f for f in all_files if f not in last_3]
 
-    print(f"הרצת בדיקה חד-פעמית: מעבד מחדש את 3 הקבצים האחרונים: {last_3}")
+    print(f"עיבוד מחדש של הקבצים: {last_3}")
 
     return {
         "v": STATE_VERSION,
@@ -143,6 +143,7 @@ def norm(t):
 
 def analyze_audio(raw):
     text = transcribe(raw)
+    print("תמלול שהתקבל:", text)
     t = norm(text)
     if any(norm(n) in t for n in BLOCKED_NAMES):
         return {"blocked_name": True}
@@ -179,7 +180,6 @@ def main():
     s = load_state()
     now = time.time()
     quota_hit = False
-    new = 0
 
     for name in y_list(IN_EXT):
         if name in s["seen"]:
@@ -197,7 +197,6 @@ def main():
                 s["seen"].append(name)
             continue
         s["seen"].append(name)
-        new += 1
         if m.get("blocked_name"):
             print("msg", name, "שם-חסום-נחסם")
             continue
@@ -206,7 +205,6 @@ def main():
               "ריק" if m.get("empty") else "",
               "נגד-המערכת-נחסם" if m.get("against_system") else "",
               "רגיש-ממתין-לאישור" if hold else "")
-        m.pop("transcript", None)
         if m.get("empty") or m.get("against_system"):
             continue
         m.update(id=name, ts=now)
@@ -214,7 +212,8 @@ def main():
 
     s["pending"] = [p for p in s["pending"] if now - p["ts"] < MAX_AGE_H * 3600]
 
-    if s["pending"] and not quota_hit and (new or now - s.get("last_decide", 0) > 1200):
+    # מעבדים ומעלים כל עוד יש הודעות ממתינות!
+    if s["pending"] and not quota_hit:
         s["last_decide"] = now
         try:
             groups = decide(s["pending"])
@@ -248,12 +247,12 @@ def main():
                 n = s["next"]
                 s["next"] += 1
                 target_path = f"ivr2:/{OUT_EXT}/{n:03d}.tts"
-                print("published (עדכון שוטף - שלוחה 1)", f"{n:03d}.tts")
+                print("published (עדכון שוטף -> שלוחה 1):", f"{n:03d}.tts")
             else:
                 n = s.get("next_unrelated", 1)
                 s["next_unrelated"] = n + 1
                 target_path = f"ivr2:/{UNRELATED_EXT}/{n:03d}.tts"
-                print("published (בירורים/לא קשור - שלוחה 0/1)", f"{n:03d}.tts")
+                print("published (בירורים/לא קשור -> שלוחה 0/1):", f"{n:03d}.tts")
 
             y_text_upload(target_path, res["text"])
             s["pending"] = [p for p in s["pending"] if p["id"] not in g["ids"]]
