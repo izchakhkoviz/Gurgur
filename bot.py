@@ -5,12 +5,12 @@ SYSTEM = "0772023014"
 TOKEN = f"{SYSTEM}:{os.environ['YEMOT_PASSWORD']}"
 API = "https://www.call2all.co.il/ym/api"
 IN_EXT = "2"
-OUT_EXT = "1"           # שלוחה 1: אך ורק עדכונים חדשותיים שוטפים על חסידות גור
-UNRELATED_EXT = "0/1"   # שלוחה 0/1: שאלות, בקשות עדכון, בירורים ותכנים כלליים
+OUT_EXT = "1"           # שלוחה 1: עדכוני חדשות חסידות גור
+UNRELATED_EXT = "0/1"   # שלוחה 0/1: הודעות כלליות בלבד
 
 STATE_PATH = "ivr2:/9/state.json"
 STT_MODEL = "whisper-large-v3-turbo"
-STATE_VERSION = 19      # גרסה 19: תיקון מעקב והעלאה מיידית
+STATE_VERSION = 21      # גרסה 21: העלאת כל התוכן המנוסח של גור לשלוחה 1
 
 # הודעה שמזכירה אחד מהשמות האלה לא תעלה
 BLOCKED_NAMES = ["מוישי", "משה לייב פרידמן", "משה ליב פרידמן", "משה לייב פריידמן"]
@@ -20,10 +20,7 @@ MAX_AGE_H = 24
 RULES = ("אתה עורך חדשות ראשי בקו טלפוני חסידי מוביל (בסגנון מבזקי חדשות והפרגוד). "
          "תפקידך להאזין לתמליל ההודעה ולנסח אותה כמבזק חדשות שוטף, קולח, אנושי ומקצועי לחלוטין. "
          "הקפד על לשון נקייה ומכובדת, ושמור על כבוד כ\"ק מרן אדמו\"ר שליט\"א, הרבנים והחצר החסידית. "
-         "אין להשתמש בפתיחים מלאכותיים כגון 'כתב המערכת' או 'כאן כתב'. "
-         "התאם את הניסוח לאופי המסר: "
-         "אם מדובר בעדכון שוטף – נסח כמבזק אקטואלי חד וברור. "
-         "אם מדובר בבקשת עדכון, בירור פרטים או שאלה של מאזין – נסח זאת כפנייה/בירור מטעם המאזינים ('מאזינים מבקשים לברר...').")
+         "אין להשתמש בפתיחים מלאכותיים כגון 'כתב המערכת' או 'כאן כתב'.")
 
 client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
@@ -129,7 +126,6 @@ def triage(text):
          '  "against_system": bool (פגיעה, זלזול, ביקורת או קללה נגד הנהלת/מערכת הקו),\n'
          '  "sensitive": bool (דיווח על פטירה, פציעה קשה או פיגוע בלבד),\n'
          '  "related_to_gur": bool (האם יש קשר לחסידות גור, מוסדותיה, אנשיה או אירועיה),\n'
-         '  "is_pure_update": bool (האם מדובר בעדכון חדשותי שוטף נטו, ולא בשאלה, בקשת מידע או בירור פרטים),\n'
          '  "topic": "", "summary": "", "facts": []\n'
          '}\n\nהודעה:\n' + text)
     res = jparse(ask("אתה עורך תוכן חסידי.", p, as_json=True))
@@ -168,9 +164,10 @@ def decide(pending):
     return [{"ids": [i["id"] for i in pending], "ready": True}]
 
 def write_story(group):
-    src = json.dumps([{"summary": g.get("summary", ""), "facts": g.get("facts", [])} for g in group], ensure_ascii=False)
+    src_data = [{"summary": g.get("summary", ""), "facts": g.get("facts", [])} for g in group]
+    src = json.dumps(src_data, ensure_ascii=False)
     p = (f"{RULES}\n\n"
-         f"מקורות מהמאזינים:\n{src}\n\n"
+         f"מידע מהמאזינים:\n{src}\n\n"
          "נסח את הידיעה כמבזק חדשות טלפוני קולח ומקצועי. "
          'החזר JSON בלבד: {"publishable":true, "text":"טקסט הידיעה המנוסח"}')
     return jparse(ask("אתה עורך ראשי במערכת ניוז חסידית.", p, as_json=True))
@@ -235,15 +232,14 @@ def main():
                 if is_quota(e):
                     quota_hit = True
                 continue
-            if not res.get("publishable"):
-                for p in group:
-                    p["tries"] = p.get("tries", 0) + 1
+            text_out = res.get("text", "")
+            if not res.get("publishable") or not text_out:
                 continue
 
-            is_gur = any(p.get("related_to_gur") for p in group)
-            is_pure_update = all(p.get("is_pure_update", True) for p in group)
+            is_gur = any(p.get("related_to_gur", True) for p in group)
 
-            if is_gur and is_pure_update:
+            # כל תוכן שקשור לגור עולה ישירות לשלוחה 1!
+            if is_gur:
                 n = s["next"]
                 s["next"] += 1
                 target_path = f"ivr2:/{OUT_EXT}/{n:03d}.tts"
@@ -254,7 +250,7 @@ def main():
                 target_path = f"ivr2:/{UNRELATED_EXT}/{n:03d}.tts"
                 print("published (בירורים/לא קשור -> שלוחה 0/1):", f"{n:03d}.tts")
 
-            y_text_upload(target_path, res["text"])
+            y_text_upload(target_path, text_out)
             s["pending"] = [p for p in s["pending"] if p["id"] not in g["ids"]]
 
         s["pending"] = [p for p in s["pending"] if p.get("tries", 0) < 3]
