@@ -49,15 +49,12 @@ def pick_model():
 
 LLM_MODEL = pick_model()
 print("LLM model:", LLM_MODEL)
-SEARCH_MODEL = next((m for m in ["groq/compound", "groq/compound-mini", "compound-beta"] if m in IDS), None)
-print("SEARCH model:", SEARCH_MODEL)
 
-def ask(system, user, search=False, as_json=False):
-    kw = {}
+def ask(system, user, as_json=False):
     r = client.chat.completions.create(
-        model=SEARCH_MODEL if (search and SEARCH_MODEL) else LLM_MODEL,
+        model=LLM_MODEL,
         messages=[{"role": "system", "content": system},
-                  {"role": "user", "content": user}], **kw)
+                  {"role": "user", "content": user}])
     return r.choices[0].message.content or ""
 
 def jparse(t):
@@ -137,7 +134,7 @@ def write_story(group):
          f"מקורות מהמאזינים:\n{src}\n\n"
          "נסח את הידיעה בצורה אנושית ומקצועית לחלוטין. "
          'החזר JSON בלבד: {"publishable":true, "text":"טקסט הידיעה המנוסח בצורה טבעית וקולחת"}')
-    return jparse(ask("אתה עורך ראשי במערכת ניוז חסידית.", p, search=True))
+    return jparse(ask("אתה עורך ראשי במערכת ניוז חסידית.", p))
 
 # ---------- ריצה ----------
 def main():
