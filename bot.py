@@ -6,11 +6,11 @@ TOKEN = f"{SYSTEM}:{os.environ['YEMOT_PASSWORD']}"
 API = "https://www.call2all.co.il/ym/api"
 IN_EXT = "2"
 OUT_EXT = "1"           # שלוחה 1: אך ורק עדכוני חדשות שוטפים של חסידות גור
-UNRELATED_EXT = "0/1"   # שלוחה 0/1: שלוחת ניהול אישית (לכל שאר הדיווחים/בירורים)
+UNRELATED_EXT = "0/1"   # שלוחה 0/1: שלוחת ניהול אישית (לכל שאר הדיווחים)
 
 STATE_PATH = "ivr2:/9/state.json"
 STT_MODEL = "whisper-large-v3-turbo"
-STATE_VERSION = 24      # גרסה 24: ניתוק לשלוחת ניהול 0/1 והשלמת מילים לפי הקשר
+STATE_VERSION = 25      # גרסה 25: ניסוח טקסט ישיר ללא מעטפת JSON ומניעת פסילות שווא
 
 BLOCKED_NAMES = ["מוישי", "משה לייב פרידמן", "משה ליב פרידמן", "משה לייב פריידמן"]
 HOLD_SENSITIVE = True
@@ -18,10 +18,9 @@ MAX_AGE_H = 24
 
 RULES = ("אתה עורך חדשות ראשי בכיר בקו טלפוני חסידי מוביל. "
          "תפקידך לקחת את התמלול והנתונים שהעביר המאזין ולנסח אותם כמבזק חדשות טלפוני קולח, ברור ומקצועי. "
-         "הנחיה קריטית להשלמת תוכן: אם בתמלול מופיעה מילה לא ברורה, מקועקעת, משובשת או שגיאת תמלול קלה – "
-         "השתמש בהקשר הכללי של הידיעה והמשפט כדי לתקן אותה למילה המתאימה והגיונית ביותר בעברית. "
-         "הקפד על לשון נקייה ומכובדת, ושמור על כבוד כ\"ק מרן אדמו\"ר שליט\"א, הרבנים והחצר החסידית. "
-         "הצג ישירות את הידיעה או הנתונים בצורה מכובדת ללא פתיחים מלאכותיים.")
+         "אם בתמלול מופיעה מילה לא ברורה או שגיאת תמלול – תתקן אותה לפי ההקשר הלוגי של המשפט. "
+         "הקפד על לשון נקייה ומכובדת, ושמור על כבוד כ\"ק מרן אדמו\"ר שליט\"א והחצר החסידית. "
+         "החזר אך ורק את טקסט הידיעה המנוסח, ללא פתיחים, ללא JSON וללא הערות נוספות.")
 
 client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
@@ -40,13 +39,13 @@ def pick_model():
 LLM_MODEL = pick_model()
 print("LLM model:", LLM_MODEL)
 
-def ask(system, user, as_json=False):
-    kw = {"max_tokens": 250} if as_json else {"max_tokens": 180}
+def ask(system, user):
     r = client.chat.completions.create(
         model=LLM_MODEL,
         messages=[{"role": "system", "content": system},
-                  {"role": "user", "content": user}], **kw)
-    time.sleep(4)
+                  {"role": "user", "content": user}],
+        max_tokens=300)
+    time.sleep(3)
     return r.choices[0].message.content or ""
 
 def jparse(t):
@@ -93,7 +92,7 @@ def load_state():
     last_3 = all_files[-3:] if len(all_files) >= 3 else all_files
     seen_files = [f for f in all_files if f not in last_3]
 
-    print(f"עיבוד מחדש בגרסה 24 של הקבצים: {last_3}")
+    print(f"עיבוד מחדש בגרסה 25 של הקבצים: {last_3}")
 
     return {
         "v": STATE_VERSION,
@@ -119,13 +118,9 @@ def triage(text):
          '  "empty": bool (שקט או רעש מוחלט בלבד),\n'
          '  "against_system": bool (פגיעה, זלזול, ביקורת או קללה נגד הנהלת/מערכת הקו),\n'
          '  "sensitive": bool (דיווח על פטירה, פציעה קשה או פיגוע בלבד),\n'
-         '  "related_to_gur": bool (האם מדובר בעדכון חדשותי שקשור באופן ישיר לחסידות גור),\n'
-         '  "topic": "", "summary": "", "facts": []\n'
+         '  "related_to_gur": bool (האם מדובר בעדכון שקשור באופן ישיר לחסידות גור)\n'
          '}\n\nהודעה:\n' + text)
-    res = jparse(ask("אתה עורך תוכן חסידי.", p, as_json=True))
-    res.setdefault("topic", "")
-    res.setdefault("summary", "")
-    res.setdefault("facts", [])
+    res = jparse(ask("אתה עורך תוכן חסידי.", p))
     return res
 
 def norm(t):
@@ -147,17 +142,11 @@ def is_quota(e):
     return "429" in str(e) or "rate_limit" in str(e).lower()
 
 def write_story_single(item):
-    summary = item.get("summary", "")
-    facts = item.get("facts", [])
     raw_text = item.get("raw_text", "")
-    src = json.dumps({"raw_text": raw_text, "summary": summary, "facts": facts}, ensure_ascii=False)
-
-    p = (f"{RULES}\n\n"
-         f"נתונים ותמלול מהמאזין:\n{src}\n\n"
-         "נסח את הידיעה כמבזק חדשות אקטואלי, קולח וברור להקראה טלפונית. "
-         "אם ישנן מילים לא ברורות בתמלול, תקן אותן לפי ההקשר הלוגי של המשפט.\n"
-         'החזר JSON בלבד: {"publishable":true, "text":"טקסט הידיעה המנוסח"}')
-    return jparse(ask("אתה עורך ראשי במערכת ניוז חסידית.", p, as_json=True))
+    p = (f"תמלול המאזין:\n{raw_text}\n\n"
+         "נסח את הידיעה/הנתונים כמבזק חדשות אקטואלי, קולח וברור להקראה טלפונית. "
+         "תקן מילים לא ברורות לפי ההקשר הלוגי. החזר אך ורק את הניסוח הסופי.")
+    return ask(RULES, p).strip()
 
 # ---------- ריצה ----------
 def main():
@@ -202,22 +191,19 @@ def main():
             if quota_hit:
                 break
             try:
-                res = write_story_single(item)
+                text_out = write_story_single(item)
             except Exception as e:
                 print("write fail for", item["id"], e)
                 if is_quota(e):
                     quota_hit = True
                 continue
 
-            text_out = res.get("text", "")
-            if not res.get("publishable") or not text_out:
-                print("הודעה נפסלה:", item["id"])
-                item["tries"] = item.get("tries", 0) + 1
+            if not text_out or len(text_out) < 5:
+                print("ניסוח ריק עבור:", item["id"])
                 continue
 
             is_gur = item.get("related_to_gur", False)
 
-            # עדכוני גור עולים לשלוחה 1, כל השאר לשלוחת הניהול 0/1
             if is_gur:
                 n = s["next"]
                 s["next"] += 1
