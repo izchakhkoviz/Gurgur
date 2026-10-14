@@ -97,8 +97,7 @@ def decide(pending):
     items = [{"id": i["id"], "topic": i["topic"], "summary": i["summary"],
               "facts": i["facts"], "age_min": int((time.time() - i["ts"]) / 60)} for i in pending]
     p = ('קבץ את ההודעות לפי אירוע. החזר JSON: {"groups":[{"ids":[],"ready":bool}]}. '
-         'ready=true רק אם יש לפחות 2 הודעות על אותו אירוע, או הודעה אחת בת 15 דקות ומעלה. '
-         'השאר ready=false.\n' + json.dumps(items, ensure_ascii=False))
+         'ready=true לכל קבוצה, גם אם יש בה הודעה אחת בלבד.\n' + json.dumps(items, ensure_ascii=False))
     return jparse(ask("אתה עורך חדשות זהיר.", p, as_json=True))["groups"]
 
 def write_story(group, reporter):
@@ -108,7 +107,8 @@ def write_story(group, reporter):
          f"מקורות מהמאזינים ({len(group)} הודעות):\n{src}\n\n"
          "חפש ברשת אימות והשלמות באתרי חדשות ומקורות רשמיים. "
          + ("יש כמה הודעות, אפשר לפרסם גם בלי אימות מהרשת. " if multi else
-            "זו הודעה בודדת: publishable=true רק אם אומתה ברשת. ")
+            "זו הודעה בודדת: נסח אותה בזהירות, כ'על פי דיווח שהגיע למערכת' אם לא אומתה ברשת, "
+            "ו-publishable=true. רק אם המקורות ברשת סותרים את הידיעה או שהיא אינה חדשותית: publishable=false. ")
          + 'החזר JSON בלבד: {"publishable":bool,"text":"הידיעה, 3-5 משפטים, בפתיח: כאן '
          + reporter["name"] + '"}')
     return jparse(ask("אתה כתב במערכת חדשות טלפונית.", p, search=True))
@@ -137,6 +137,9 @@ def main():
             continue
         s["seen"].append(name)
         new += 1
+        print("msg", name, "חדשותי" if m.get("newsworthy") else "לא-חדשותי",
+              "ספאם" if m.get("spam") else "", "רגיש-לאישור-ידני" if m.get("sensitive") else "",
+              "|", m.get("topic", ""))
         m.pop("transcript", None)
         if m.get("spam") or not m.get("newsworthy"):
             continue
