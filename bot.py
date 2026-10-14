@@ -10,7 +10,7 @@ UNRELATED_EXT = "0/1"   # שלוחה 1 בתוך 0 להודעות שאינן קש
 
 STATE_PATH = "ivr2:/9/state.json"   # המצב נשמר בימות
 STT_MODEL = "whisper-large-v3-turbo"
-STATE_VERSION = 9
+STATE_VERSION = 10
 
 # הודעה שמזכירה אחד מהשמות האלה לא תעלה
 BLOCKED_NAMES = ["מוישי", "משה לייב פרידמן", "משה ליב פרידמן", "משה לייב פריידמן", "משה ליב פריידמן"]
@@ -20,15 +20,14 @@ MAX_AGE_H = 24
 RULES = ("אתה עורך מקצועי במערכת ניוז טלפונית חסידית. "
          "תפקידך להאזין לתמליל ההודעה ולנסח אותה מחדש בצורה קולחת, אנושית, זורמת ומקצועית לחלוטין, "
          "כאילו עורך תוכן אנושי ניסח אותה עבור השידור. "
-         "הקפד על בלשון נקייה ומכובדת, ושמור על כבוד כ\"ק מרן אדמו\"ר שליט\"א, הרבנים והחצר החסידית. "
+         "הקפד על לשון נקייה ומכובדת, ושמור על כבוד כ\"ק מרן אדמו\"ר שליט\"א, הרבנים והחצר החסידית. "
          "אין להשתמש בפתיחים מלאכותיים כגון 'כתב המערכת' או 'כאן כתב'. "
-         "התאים את ניסוח הידיעה בדיוק לאופי ההודעה המקורית: "
+         "התאם את ניסוח הידיעה בדיוק לאופי ההודעה המקורית: "
          "אם המאזין שואל שאלה או מברר פרט - נסח את הדיווח כשאלה/פניית מאזינים (לדוגמה: 'מאזינים מבקשים לדעת...'). "
          "אם זו בקשת עזרה/מידע, הודעת מערכת או סקופ חדשותי - נסח בהתאם לתוכן בצורה אנושית וטבעית.")
 
 client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
-# מודלים מהירים ובעלי מכסה יומית גדולה בהרבה
 PREFERRED = ["qwen/qwen3.8-27b", "openai/gpt-oss-20b", "openai/gpt-oss-120b"]
 
 IDS = set()
@@ -44,17 +43,18 @@ def pick_model():
     for m in PREFERRED:
         if m in ids:
             return m
-    print("אף מודל מהרשימה לא זמין. מודלים זמינים:", sorted(ids))
     return PREFERRED[0]
 
 LLM_MODEL = pick_model()
 print("LLM model:", LLM_MODEL)
 
 def ask(system, user, as_json=False):
+    # הגבלת אורך התשובה (max_tokens) כדי שלא לחרוג ממגבלת ה-Output של המודל
+    kw = {"max_tokens": 500} if as_json else {"max_tokens": 300}
     r = client.chat.completions.create(
         model=LLM_MODEL,
         messages=[{"role": "system", "content": system},
-                  {"role": "user", "content": user}])
+                  {"role": "user", "content": user}], **kw)
     return r.choices[0].message.content or ""
 
 def jparse(t):
@@ -65,7 +65,6 @@ def jparse(t):
 def y_list(ext):
     r = requests.get(f"{API}/GetIVR2Dir", params={"token": TOKEN, "path": f"ivr2:/{ext}"}).json()
     files = [f["name"] for f in r.get("files", []) if f["name"].lower().endswith(".wav")]
-    # מיון הקבצים מהישן לחדש לפי מספרים
     return sorted(files, key=lambda x: int(re.search(r'\d+', x).group()) if re.search(r'\d+', x) else 0)
 
 def y_download(path):
@@ -135,8 +134,8 @@ def write_story(group):
     p = (f"{RULES}\n\n"
          f"מקורות מהמאזינים:\n{src}\n\n"
          "נסח את הידיעה בצורה אנושית ומקצועית לחלוטין. "
-         '{"publishable":true, "text":"טקסט הידיעה המנוסח בצורה טבעית וקולחת"}')
-    return jparse(ask("אתה עורך ראשי במערכת ניוז חסידית.", p))
+         'החזר JSON בלבד: {"publishable":true, "text":"טקסט הידיעה המנוסח בצורה טבעית וקולחת"}')
+    return jparse(ask("אתה עורך ראשי במערכת ניוז חסידית.", p, as_json=True))
 
 # ---------- ריצה ----------
 def main():
@@ -205,17 +204,14 @@ def main():
                     p["tries"] = p.get("tries", 0) + 1
                 continue
 
-            # בדיקה אם לפחות הודעה אחת בקבוצה קשורה לחסידות גור
             is_gur = any(p.get("related_to_gur") for p in group)
 
             if is_gur:
-                # קשור לחסידות גור -> עולה לשלוחה 1 (OUT_EXT)
                 n = s["next"]
                 s["next"] += 1
                 target_path = f"ivr2:/{OUT_EXT}/{n:03d}.tts"
                 print("published (גור - שלוחה 1)", f"{n:03d}.tts")
             else:
-                # לא קשור לחסידות גור -> עולה לשלוחה 0/1 (UNRELATED_EXT)
                 n = s.get("next_unrelated", 1)
                 s["next_unrelated"] = n + 1
                 target_path = f"ivr2:/{UNRELATED_EXT}/{n:03d}.tts"
