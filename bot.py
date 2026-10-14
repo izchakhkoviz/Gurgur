@@ -4,27 +4,27 @@ from groq import Groq
 SYSTEM = "0772023014"
 TOKEN = f"{SYSTEM}:{os.environ['YEMOT_PASSWORD']}"
 API = "https://www.call2all.co.il/ym/api"
-IN_EXT, OUT_EXT = "2", "1"
-STATE_PATH = "ivr2:/9/state.json"   # המצב נשמר בימות, לא ב-GitHub
+IN_EXT = "2"
+OUT_EXT = "1"           # שלוחה להודעות הקשורות לחסידות גור
+UNRELATED_EXT = "0/1"   # שלוחה 1 בתוך 0 להודעות שאינן קשורות לחסידות גור
+
+STATE_PATH = "ivr2:/9/state.json"   # המצב נשמר בימות
 STT_MODEL = "whisper-large-v3-turbo"
-STATE_VERSION = 6
-# הודעה שמזכירה אחד מהשמות האלה לא תעלה. אפשר להוסיף כאן כתיבים נוספים
+STATE_VERSION = 8
+
+# הודעה שמזכירה אחד מהשמות האלה לא תעלה
 BLOCKED_NAMES = ["מוישי", "משה לייב פרידמן", "משה ליב פרידמן", "משה לייב פריידמן", "משה ליב פריידמן"]
-HOLD_SENSITIVE = True   # True = דיווחי פטירה/פציעה/פיגוע לא עולים אוטומטית. False = גם הם עולים
+HOLD_SENSITIVE = True   # True = דיווחי פטירה/פציעה/פיגוע בלבד ממתינים לאישור
 MAX_AGE_H = 24
 
-# סגנונות כתיבה גמישים ואנושיים ללא פתיחים מאולצים קבועים
-REPORTERS = [
-    {"name": "עדכון מערכת", "style": "תמציתי, ענייני, משפטים קצרים וברורים."},
-    {"name": "הודעת מערכת", "style": "חם ואישי, פונה לציבור המאזינים בצורה מכובדת."},
-    {"name": "מבזק חסידי", "style": "רשמי, בנימה של עדכון חצר מכובד וראוי."},
-]
-RULES = ("כתוב בעברית נקייה, בלשון המקובלת והמכובדת בציבור החסידי (חסידות גור). "
-         'הקפד על כבוד הראוי לאדמו"ר שליט"א, לרבנים ולחצר החסידית בכל פנייה וניסוח. '
-         "אל תוסיף שום פרט שלא מופיע במקורות, ואל תוסיף ביקורת או שבח שלא נאמרו. "
-         "שמות אנשים מהמקורות נשארים כפי שנאמרו. "
-         "התאם את פתיחת הדיווח והניסוח אך ורק לתוכן ההודעה בפועל (לדוגמה: לבקשת המאזינים, הודעת מערכת, או עדכון מהשטח) "
-         "בצורה טבעית, אנושית וזורמת לחלוטין, ללא מילים או משפטי תבנית קבועים שלא קשורים לתוכן.")
+RULES = ("אתה עורך מקצועי במערכת ניוז טלפונית חסידית. "
+         "תפקידך להאזין לתמליל ההודעה ולנסח אותה מחדש בצורה קולחת, אנושית, זורמת ומקצועית לחלוטין, "
+         "כאילו עורך תוכן אנושי ניסח אותה עבור השידור. "
+         "הקפד על בלשון נקייה ומכובדת, ושמור על כבוד כ\"ק מרן אדמו\"ר שליט\"א, הרבנים והחצר החסידית. "
+         "אין להשתמש בפתיחים מלאכותיים כגון 'כתב המערכת' או 'כאן כתב'. "
+         "התאם את ניסוח הידיעה בדיוק לאופי ההודעה המקורית: "
+         "אם המאזין שואל שאלה או מברר פרט - נסח את הדיווח כשאלה/פניית מאזינים (לדוגמה: 'מאזינים מבקשים לדעת...'). "
+         "אם זו בקשת עזרה/מידע, הודעת מערכת או סקופ חדשותי - נסח בהתאם לתוכן בצורה אנושית וטבעית.")
 
 client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
@@ -81,10 +81,12 @@ def load_state():
         if "pending" in s and s.get("v") == STATE_VERSION:
             if s.get("next", 0) < 242:
                 s["next"] = 242
+            if s.get("next_unrelated", 0) < 1:
+                s["next_unrelated"] = 1
             return s
     except Exception:
         pass
-    return {"v": STATE_VERSION, "seen": [], "pending": [], "held": [], "next": 242, "rr": 0, "last_decide": 0}
+    return {"v": STATE_VERSION, "seen": [], "pending": [], "held": [], "next": 242, "next_unrelated": 1, "last_decide": 0}
 
 def save_state(s):
     y_text_upload(STATE_PATH, json.dumps(s, ensure_ascii=False))
@@ -95,13 +97,15 @@ def transcribe(raw):
     return getattr(r, "text", r)
 
 def triage(text):
-    p = ('סנן הודעה של מאזין למערכת חדשות חסידית. כל הודעה עם תוכן מתפרסמת: '
-         'ידיעות, סקופים, שמועות, עדכונים על חצרות, אישים ואירועים. החזר JSON בלבד: '
-         '{"empty":bool (שקט, רעש או לא ברור בכלל),'
-         '"against_system":bool (פגיעה, ביקורת, קללה או לשון הרע נגד מנהל המערכת, המערכת או הכתבים שלה),'
-         '"sensitive":bool (דיווח על פטירה, פציעה קשה או פיגוע בלבד),'
-         '"topic":"","summary":"","facts":[]}\n\nהודעה:\n' + text)
-    return jparse(ask("אתה עורך חדשות.", p, as_json=True))
+    p = ('נתח הודעה של מאזין. החזר JSON בלבד:\n'
+         '{\n'
+         '  "empty": bool (שקט, רעש או לא מובן),\n'
+         '  "against_system": bool (פגיעה, זלזול, ביקורת או קללה נגד הנהלת/מערכת הקו),\n'
+         '  "sensitive": bool (דיווח על פטירה, פציעה קשה או פיגוע בלבד),\n'
+         '  "related_to_gur": bool (האם יש קשר, אפילו רחוק, לחסידות גור, מוסדותיה, אנשיה, אירועיה או נושאים הנוגעים לה),\n'
+         '  "topic": "", "summary": "", "facts": []\n'
+         '}\n\nהודעה:\n' + text)
+    return jparse(ask("אתה עורך תוכן חסידי.", p, as_json=True))
 
 def norm(t):
     return " ".join(re.sub(r"[^\u05d0-\u05ea ]", " ", t).split())
@@ -127,15 +131,13 @@ def decide(pending):
          'ready=true לכל קבוצה, גם אם יש בה הודעה אחת בלבד.\n' + json.dumps(items, ensure_ascii=False))
     return jparse(ask("אתה עורך חדשות זהיר.", p, as_json=True))["groups"]
 
-def write_story(group, reporter):
+def write_story(group):
     src = json.dumps([{"summary": g["summary"], "facts": g["facts"]} for g in group], ensure_ascii=False)
-    multi = len(group) > 1
-    p = (f"{RULES}\nסגנון הדיווח: {reporter['style']}\n"
-         f"מקורות מהמאזינים ({len(group)} הודעות):\n{src}\n\n"
-         "נסח את הידיעה בצורה אנושית, טבעית ומכובדת, מותאמת בדיוק לתוכן ההודעה (למשל: פניית מאזין, הודעת מערכת, או עדכון אירוע). "
-         "הימנע מתוספות מיותרות או ממשפטי פתיחה רובוטיים. "
-         '\u05d4\u05d7\u05d6\u05e8 JSON בלבד: {"publishable":true,"text":"טקסט הדיווח המלא, 3-5 משפטים זורמים ומכובדים"}')
-    return jparse(ask("אתה עורך בכיר במערכת חדשות טלפונית.", p, search=True))
+    p = (f"{RULES}\n\n"
+         f"מקורות מהמאזינים:\n{src}\n\n"
+         "נסח את הידיעה בצורה אנושית ומקצועית לחלוטין. "
+         'החזר JSON בלבד: {"publishable":true, "text":"טקסט הידיעה המנוסח בצורה טבעית וקולחת"}')
+    return jparse(ask("אתה עורך ראשי במערכת ניוז חסידית.", p, search=True))
 
 # ---------- ריצה ----------
 def main():
@@ -168,7 +170,8 @@ def main():
         print("msg", name,
               "ריק" if m.get("empty") else "",
               "נגד-המערכת-נחסם" if m.get("against_system") else "",
-              "רגיש-ממתין-לאישור" if hold else "")
+              "רגיש-ממתין-לאישור" if hold else "",
+              "קשור לחסידות גור:" if m.get("related_to_gur") else "לא קשור לגור")
         m.pop("transcript", None)
         if m.get("empty") or m.get("against_system"):
             continue
@@ -191,9 +194,8 @@ def main():
             group = [by_id[i] for i in g["ids"] if i in by_id]
             if not group:
                 continue
-            rep = REPORTERS[s["rr"] % len(REPORTERS)]
             try:
-                res = write_story(group, rep)
+                res = write_story(group)
             except Exception as e:
                 print("write fail", e)
                 if is_quota(e):
@@ -203,10 +205,26 @@ def main():
                 for p in group:
                     p["tries"] = p.get("tries", 0) + 1
                 continue
-            n = s["next"]; s["next"] += 1; s["rr"] += 1
-            y_text_upload(f"ivr2:/{OUT_EXT}/{n:03d}.tts", res["text"])
+
+            # בדיקה אם לפחות הודעה אחת בקבוצה קשורה לחסידות גור
+            is_gur = any(p.get("related_to_gur") for p in group)
+
+            if is_gur:
+                # קשור לחסידות גור -> עולה לשלוחה 1 (OUT_EXT)
+                n = s["next"]
+                s["next"] += 1
+                target_path = f"ivr2:/{OUT_EXT}/{n:03d}.tts"
+                print("published (גור - שלוחה 1)", f"{n:03d}.tts")
+            else:
+                # לא קשור לחסידות גור -> עולה לשלוחה 0/1 (UNRELATED_EXT)
+                n = s.get("next_unrelated", 1)
+                s["next_unrelated"] = n + 1
+                target_path = f"ivr2:/{UNRELATED_EXT}/{n:03d}.tts"
+                print("published (לא קשור - שלוחה 0/1)", f"{n:03d}.tts")
+
+            y_text_upload(target_path, res["text"])
             s["pending"] = [p for p in s["pending"] if p["id"] not in g["ids"]]
-            print("published", f"{n:03d}.tts")
+
         s["pending"] = [p for p in s["pending"] if p.get("tries", 0) < 3]
 
     if quota_hit:
