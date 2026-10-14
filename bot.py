@@ -207,9 +207,10 @@ def main():
                     p["tries"] = p.get("tries", 0) + 1
                 continue
             n = s["next"]; s["next"] += 1; s["rr"] += 1
-            y_text_upload(f"ivr2:/{OUT_EXT}/{n:03d}.txt", res["text"])
+            # מעלה כקובץ TTS עם סיומת tts המקורית שימות המשיח דורשים
+            y_text_upload(f"ivr2:/{OUT_EXT}/{n:03d}.tts", res["text"])
             s["pending"] = [p for p in s["pending"] if p["id"] not in g["ids"]]
-            print("published", f"{n:03d}.txt")
+            print("published", f"{n:03d}.tts")
         s["pending"] = [p for p in s["pending"] if p.get("tries", 0) < 3]
 
     if quota_hit:
