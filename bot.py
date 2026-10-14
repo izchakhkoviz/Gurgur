@@ -10,14 +10,13 @@ UNRELATED_EXT = "0/1"   # שלוחה 0/1: שאלות, בקשות עדכון, ב�
 
 STATE_PATH = "ivr2:/9/state.json"
 STT_MODEL = "whisper-large-v3-turbo"
-STATE_VERSION = 14
+STATE_VERSION = 15
 
 # הודעה שמזכירה אחד מהשמות האלה לא תעלה
 BLOCKED_NAMES = ["מוישי", "משה לייב פרידמן", "משה ליב פרידמן", "משה לייב פריידמן"]
 HOLD_SENSITIVE = True   # דיווחי פטירה/פציעה/פיגוע בלבד ממתינים לאישור
 MAX_AGE_H = 24
 
-# הנחיות עריכה משודרגות בסגנון "מבזקים פלוס" / "הפרגוד"
 RULES = ("אתה עורך חדשות ראשי בקו טלפוני חסידי מוביל (בסגנון מבזקי חדשות והפרגוד). "
          "תפקידך להאזין לתמליל ההודעה ולנסח אותה כמבזק חדשות שוטף, קולח, אנושי ומקצועי לחלוטין. "
          "הקפד על לשון נקייה ומכובדת, ושמור על כבוד כ\"ק מרן אדמו\"ר שליט\"א, הרבנים והחצר החסידית. "
@@ -49,12 +48,14 @@ LLM_MODEL = pick_model()
 print("LLM model:", LLM_MODEL)
 
 def ask(system, user, as_json=False):
-    kw = {"max_tokens": 400} if as_json else {"max_tokens": 250}
+    # הגבלה הדוקה על max_tokens כדי להישאר תמיד מתחת למגבלת הדקה
+    kw = {"max_tokens": 300} if as_json else {"max_tokens": 200}
     r = client.chat.completions.create(
         model=LLM_MODEL,
         messages=[{"role": "system", "content": system},
                   {"role": "user", "content": user}], **kw)
-    time.sleep(3)
+    # השהיה של 5 שניות למניעת עומס
+    time.sleep(5)
     return r.choices[0].message.content or ""
 
 def jparse(t):
@@ -113,7 +114,6 @@ def save_state(s):
 
 # ---------- שלבים ----------
 def transcribe(raw):
-    # משתמש במודל המתקדם ביותר של Whisper לדיוק מירבי בזיהוי דיבור
     r = client.audio.transcriptions.create(file=("a.wav", raw), model=STT_MODEL, language="he")
     return getattr(r, "text", r)
 
@@ -155,6 +155,7 @@ def decide(pending):
               "facts": i.get("facts", []), "age_min": int((time.time() - i["ts"]) / 60)} for i in pending]
     p = ('קבץ את ההודעות לפי אירוע. החזר JSON: {"groups":[{"ids":[],"ready":bool}]}. '
          'ready=true לכל קבוצה, גם אם יש בה הודעה אחת בלבד.\n' + json.dumps(items, ensure_ascii=False))
+    
     parsed = jparse(ask("אתה עורך חדשות זהיר.", p, as_json=True))
     if isinstance(parsed, dict) and "groups" in parsed:
         return parsed["groups"]
@@ -235,18 +236,15 @@ def main():
                     p["tries"] = p.get("tries", 0) + 1
                 continue
 
-            # תנאי מוקדם לשלוחה 1: גם קשור לגור וגם מדובר בעדכון חדשותי שוטף נטו (לא שאלה/בקשה/בירור)
             is_gur = any(p.get("related_to_gur") for p in group)
             is_pure_update = all(p.get("is_pure_update", True) for p in group)
 
             if is_gur and is_pure_update:
-                # שלוחה 1: אך ורק עדכונים שוטפים על חסידות גור
                 n = s["next"]
                 s["next"] += 1
                 target_path = f"ivr2:/{OUT_EXT}/{n:03d}.tts"
                 print("published (עדכון שוטף - שלוחה 1)", f"{n:03d}.tts")
             else:
-                # שלוחה 0/1: שאלות, בקשות עדכון, בירורים או תכנים כלליים
                 n = s.get("next_unrelated", 1)
                 s["next_unrelated"] = n + 1
                 target_path = f"ivr2:/{UNRELATED_EXT}/{n:03d}.tts"
