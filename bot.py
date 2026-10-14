@@ -77,10 +77,12 @@ def load_state():
     try:
         s = json.loads(y_download(STATE_PATH))
         if "pending" in s and s.get("v") == STATE_VERSION:
+            # ודא שהמספר הבא לא נופל מ-211 עקב מצב ישן שנשמר בימות
+            if s.get("next", 0) < 211:
+                s["next"] = 211
             return s
     except Exception:
         pass
-    # עודכן כך שהמספר הבא יהיה 211 (כלומר הקובץ הבא שיועלה יהיה 211.tts, שהוא ה-212 במספר)
     return {"v": STATE_VERSION, "seen": [], "pending": [], "held": [], "next": 211, "rr": 0, "last_decide": 0}
 
 def save_state(s):
