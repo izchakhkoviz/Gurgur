@@ -10,10 +10,10 @@ UNRELATED_EXT = "0/1"   # שלוחה 1 בתוך 0 להודעות שאינן קש
 
 STATE_PATH = "ivr2:/9/state.json"   # המצב נשמר בימות
 STT_MODEL = "whisper-large-v3-turbo"
-STATE_VERSION = 10
+STATE_VERSION = 11
 
 # הודעה שמזכירה אחד מהשמות האלה לא תעלה
-BLOCKED_NAMES = ["מוישי", "משה לייב פרידמן", "משה ליב פרידמן", "משה לייב פריידמן", "משה ליב פריידמן"]
+BLOCKED_NAMES = ["מוישי", "משה לייב פרידמן", "משה ליב פרידמן", "משה לייב פריידמן", "mשה ליב פריידמן"]
 HOLD_SENSITIVE = True   # True = דיווחי פטירה/פציעה/פיגוע בלבד ממתינים לאישור
 MAX_AGE_H = 24
 
@@ -49,17 +49,25 @@ LLM_MODEL = pick_model()
 print("LLM model:", LLM_MODEL)
 
 def ask(system, user, as_json=False):
-    # הגבלת אורך התשובה (max_tokens) כדי שלא לחרוג ממגבלת ה-Output של המודל
-    kw = {"max_tokens": 500} if as_json else {"max_tokens": 300}
+    kw = {"max_tokens": 400} if as_json else {"max_tokens": 250}
     r = client.chat.completions.create(
         model=LLM_MODEL,
         messages=[{"role": "system", "content": system},
                   {"role": "user", "content": user}], **kw)
+    # השהיה קטנה למניעת חריגת OTPM (Rate limit)
+    time.sleep(3)
     return r.choices[0].message.content or ""
 
 def jparse(t):
-    t = re.sub(r"```(json)?", "", t).strip()
-    return json.loads(t[t.find("{"):t.rfind("}") + 1])
+    try:
+        t = re.sub(r"```(json)?", "", t).strip()
+        start = t.find("{")
+        end = t.rfind("}")
+        if start != -1 and end != -1:
+            return json.loads(t[start:end + 1])
+    except Exception:
+        pass
+    return {}
 
 # ---------- ימות ----------
 def y_list(ext):
@@ -127,7 +135,7 @@ def decide(pending):
               "facts": i["facts"], "age_min": int((time.time() - i["ts"]) / 60)} for i in pending]
     p = ('קבץ את ההודעות לפי אירוע. החזר JSON: {"groups":[{"ids":[],"ready":bool}]}. '
          'ready=true לכל קבוצה, גם אם יש בה הודעה אחת בלבד.\n' + json.dumps(items, ensure_ascii=False))
-    return jparse(ask("אתה עורך חדשות זהיר.", p, as_json=True))["groups"]
+    return jparse(ask("אתה עורך חדשות זהיר.", p, as_json=True)).get("groups", [{"ids": [i["id"] for i in pending], "ready": True}])
 
 def write_story(group):
     src = json.dumps([{"summary": g["summary"], "facts": g["facts"]} for g in group], ensure_ascii=False)
