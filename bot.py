@@ -77,7 +77,6 @@ def load_state():
     try:
         s = json.loads(y_download(STATE_PATH))
         if "pending" in s and s.get("v") == STATE_VERSION:
-            # ודא שהמספר הבא לא נופל מ-211 עקב מצב ישן שנשמר בימות
             if s.get("next", 0) < 211:
                 s["next"] = 211
             return s
@@ -207,7 +206,8 @@ def main():
                     p["tries"] = p.get("tries", 0) + 1
                 continue
             n = s["next"]; s["next"] += 1; s["rr"] += 1
-            y_text_upload(f"ivr2:/{OUT_EXT}/{n:03d}.tts", res["text"])
+            # מעלה כקובץ טקסט עם סיומת txt
+            y_text_upload(f"ivr2:/{OUT_EXT}/{n:03d}.txt", res["text"])
             s["pending"] = [p for p in s["pending"] if p["id"] not in g["ids"]]
             print("published", n)
         s["pending"] = [p for p in s["pending"] if p.get("tries", 0) < 3]
