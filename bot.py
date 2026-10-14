@@ -10,7 +10,7 @@ UNRELATED_EXT = "0/1"   # שלוחה 1 בתוך 0 להודעות שאינן קש
 
 STATE_PATH = "ivr2:/9/state.json"   # המצב נשמר בימות
 STT_MODEL = "whisper-large-v3-turbo"
-STATE_VERSION = 11
+STATE_VERSION = 12  # הגרסה עודכנה כדי לאפס ולהתחיל נקי מעכשיו בלבד
 
 # הודעה שמזכירה אחד מהשמות האלה לא תעלה
 BLOCKED_NAMES = ["מוישי", "משה לייב פרידמן", "משה ליב פרידמן", "משה לייב פריידמן", "mשה ליב פריידמן"]
@@ -92,7 +92,24 @@ def load_state():
             return s
     except Exception:
         pass
-    return {"v": STATE_VERSION, "seen": [], "pending": [], "held": [], "next": 242, "next_unrelated": 1, "last_decide": 0}
+
+    # מצב חדש לגמרי: גורם לבוט להתעלם מכל מה שכבר נמצא בשלוחה 2 ולהתחיל רק מעכשיו!
+    current_files = []
+    try:
+        current_files = y_list(IN_EXT)
+    except Exception:
+        pass
+
+    print(text := f"אתחול מצב: מתעלם מ-{len(current_files)} קבצים ישנים בשלוחה 2, ועובד רק מעכשיו.")
+    return {
+        "v": STATE_VERSION,
+        "seen": current_files,  # מסמן את כל הקבצים הקיימים כ"נצפו" כדי לא לגעת בהם
+        "pending": [],
+        "held": [],
+        "next": 242,
+        "next_unrelated": 1,
+        "last_decide": 0
+    }
 
 def save_state(s):
     y_text_upload(STATE_PATH, json.dumps(s, ensure_ascii=False))
