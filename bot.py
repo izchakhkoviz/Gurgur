@@ -10,14 +10,12 @@ UNRELATED_EXT = "0/1"   # שלוחה 0/1: שלוחת ניהול אישית לכ�
 
 STATE_PATH = "ivr2:/9/state.json"
 STT_MODEL = "whisper-large-v3-turbo"
-STATE_VERSION = 26      # גרסה 26: הבטחת עיבוד והעלאה ישירה לכל הודעה מתומללת
+STATE_VERSION = 33      # גרסה 33: עיבוד חופשי של כל הקבצים הממתינים ללא שום הגבלה
 
 BLOCKED_NAMES = ["מוישי", "משה לייב פרידמן", "משה ליב פרידמן", "משה לייב פריידמן"]
-HOLD_SENSITIVE = True
-MAX_AGE_H = 24
 
 RULES = ("אתה עורך חדשות ראשי בכיר בקו טלפוני חסידי מוביל. "
-         "תפקידך לקחת את התמלול והנתונים שהעביר המאזין ולנסח אותם כמבזק חדשות טלפוני קולח, ברור ומקצועי. "
+         "תפקידך לקחת את התמלול והנתונים שהעביר המאזין ולנסח אותם כמבזק חדשות אקטואלי, קולח וברור להקראה טלפונית. "
          "תקן שגיאות תמלול ומילים לא ברורות לפי ההקשר הלוגי. "
          "הקפד על לשון נקייה ומכובדת, ושמור על כבוד כ\"ק מרן אדמו\"ר שליט\"א והחצר החסידית. "
          "החזר אך ורק את טקסט הידיעה המנוסח, ללא פתיחים וללא הערות נוספות.")
@@ -39,13 +37,17 @@ LLM_MODEL = pick_model()
 print("LLM model:", LLM_MODEL)
 
 def ask(system, user):
-    r = client.chat.completions.create(
-        model=LLM_MODEL,
-        messages=[{"role": "system", "content": system},
-                  {"role": "user", "content": user}],
-        max_tokens=300)
-    time.sleep(3)
-    return r.choices[0].message.content or ""
+    try:
+        r = client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": user}],
+            max_tokens=350)
+        time.sleep(1)
+        return r.choices[0].message.content or ""
+    except Exception as e:
+        print("LLM error:", e)
+        return ""
 
 # ---------- ימות ----------
 def y_list(ext):
@@ -57,39 +59,23 @@ def y_download(path):
     return requests.get(f"{API}/DownloadFile", params={"token": TOKEN, "path": path}).content
 
 def y_text_upload(path, text):
-    requests.post(f"{API}/UploadTextFile", data={"token": TOKEN, "what": path, "contents": text})
+    r = requests.post(f"{API}/UploadTextFile", data={"token": TOKEN, "what": path, "contents": text})
+    print(f"UPLOAD RESULT ({path}):", r.status_code, r.text)
 
 def load_state():
-    all_files = []
-    try:
-        all_files = y_list(IN_EXT)
-    except Exception:
-        pass
-
     try:
         s = json.loads(y_download(STATE_PATH))
-        if "pending" in s and s.get("v") == STATE_VERSION:
-            if s.get("next", 0) < 242:
-                s["next"] = 242
-            if s.get("next_unrelated", 0) < 1:
-                s["next_unrelated"] = 1
+        if s.get("v") == STATE_VERSION:
             return s
     except Exception:
         pass
 
-    last_3 = all_files[-3:] if len(all_files) >= 3 else all_files
-    seen_files = [f for f in all_files if f not in last_3]
-
-    print(f"עיבוד מחדש בגרסה 26 של הקבצים: {last_3}")
-
+    print("מאתחל מצב חדש לגרסה 33...")
     return {
         "v": STATE_VERSION,
-        "seen": seen_files,
-        "pending": [],
-        "held": [],
+        "seen": [],
         "next": 242,
-        "next_unrelated": 1,
-        "last_decide": 0
+        "next_unrelated": 1
     }
 
 def save_state(s):
@@ -109,95 +95,67 @@ def analyze_audio(raw):
     t = norm(text)
     if any(norm(n) in t for n in BLOCKED_NAMES):
         return {"blocked_name": True}
-    if len(t) < 4:
+    if len(t) < 2:
         return {"empty": True}
-
-    # בדיקה האם קשור לגור לפי מילות מפתח בתמלול
-    is_gur = any(k in text for k in ["גור", "אדמור", "חסידי", "חסידות", "בית מדרש", "שטיבל"])
+    
+    is_gur = any(k in text for k in ["גור", "אדמור", "חסידי", "חסידות", "בית מדרש", "שטיבל", "חצר"])
     return {"empty": False, "raw_text": text, "related_to_gur": is_gur}
-
-def is_quota(e):
-    return "429" in str(e) or "rate_limit" in str(e).lower()
 
 def write_story_single(item):
     raw_text = item.get("raw_text", "")
     p = (f"תמלול המאזין:\n{raw_text}\n\n"
          "נסח את הידיעה כמבזק חדשות אקטואלי, קולח וברור להקראה טלפונית. "
-         "תקן שגיאות תמלול ומילים לא ברורות לפי ההקשר הלוגי. החזר אך ורק את הניסוח הסופי.")
-    return ask(RULES, p).strip()
+         "תקן שגיאות תמלול לפי ההקשר. החזר אך ורק את טקסט הידיעה המנוסח.")
+    res = ask(RULES, p).strip()
+    if not res or len(res) < 2:
+        return raw_text
+    return res
 
 # ---------- ריצה ----------
 def main():
     s = load_state()
-    now = time.time()
-    quota_hit = False
+    files = y_list(IN_EXT)
+    
+    # לוקח את כל הקבצים שטרם עובדו ללא שום הגבלה
+    unprocessed = [f for f in files if f not in s["seen"]]
+    print(f"סה''כ קבצים ממתינים לעיבוד בריצה זו: {len(unprocessed)}")
 
-    for name in y_list(IN_EXT):
-        if name in s["seen"]:
-            continue
+    if not unprocessed:
+        print("אין קבצים חדשים לעיבוד.")
+        return
+
+    for name in unprocessed:
+        s["seen"].append(name)
         try:
+            print(f"מעבד את קובץ: {name}")
             m = analyze_audio(y_download(f"ivr2:/{IN_EXT}/{name}"))
         except Exception as e:
-            print("fail", name, e)
-            if is_quota(e):
-                quota_hit = True
-                break
-            s.setdefault("fails", {})
-            s["fails"][name] = s["fails"].get(name, 0) + 1
-            if s["fails"][name] >= 3:
-                s["seen"].append(name)
+            print("שגיאה בניתוח הקובץ", name, e)
             continue
-
-        s["seen"].append(name)
+        
         if m.get("blocked_name"):
-            print("msg", name, "שם-חסום-נחסם")
+            print("הודעה נחסמה (שם חסום):", name)
             continue
         if m.get("empty"):
-            print("msg", name, "ריק")
+            print("הודעה ריקה:", name)
             continue
+            
+        text_out = write_story_single(m)
+        is_gur = m.get("related_to_gur", False)
 
-        m.update(id=name, ts=now)
-        s["pending"].append(m)
+        if is_gur:
+            n = s["next"]
+            s["next"] += 1
+            target_path = f"ivr2:/{OUT_EXT}/{n:03d}.tts"
+            print(f"PUBLISHING ({name} -> שלוחה 1 - גור): {n:03d}.tts")
+        else:
+            n = s.get("get_unrelated", 1) if "get_unrelated" in s else s.get("next_unrelated", 1)
+            s["next_unrelated"] = n + 1
+            target_path = f"ivr2:/{UNRELATED_EXT}/{n:03d}.tts"
+            print(f"PUBLISHING ({name} -> שלוחה 0/1 - ניהול): {n:03d}.tts")
 
-    s["pending"] = [p for p in s["pending"] if now - p["ts"] < MAX_AGE_H * 3600]
+        y_text_upload(target_path, text_out)
 
-    if s["pending"] and not quota_hit:
-        processed_ids = []
-        for item in list(s["pending"]):
-            if quota_hit:
-                break
-            try:
-                text_out = write_story_single(item)
-            except Exception as e:
-                print("write fail for", item["id"], e)
-                if is_quota(e):
-                    quota_hit = True
-                continue
-
-            if not text_out or len(text_out) < 5:
-                print("ניסוח ריק עבור:", item["id"])
-                continue
-
-            is_gur = item.get("related_to_gur", False)
-
-            if is_gur:
-                n = s["next"]
-                s["next"] += 1
-                target_path = f"ivr2:/{OUT_EXT}/{n:03d}.tts"
-                print(f"published ({item['id']} -> שלוחה 1 - גור):", f"{n:03d}.tts")
-            else:
-                n = s.get("next_unrelated", 1)
-                s["next_unrelated"] = n + 1
-                target_path = f"ivr2:/{UNRELATED_EXT}/{n:03d}.tts"
-                print(f"published ({item['id']} -> שלוחה 0/1 - ניהול):", f"{n:03d}.tts")
-
-            y_text_upload(target_path, text_out)
-            processed_ids.append(item["id"])
-
-        s["pending"] = [p for p in s["pending"] if p["id"] not in processed_ids]
-
-    if quota_hit:
-        print("QUOTA: המכסה החינמית נגמרה, ננסה שוב בהרצה הבאה")
     save_state(s)
 
 if __name__ == "__main__":
