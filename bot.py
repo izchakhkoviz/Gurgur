@@ -7,9 +7,8 @@ API = "https://www.call2all.co.il/ym/api"
 IN_EXT, OUT_EXT = "2", "1"
 STATE_PATH = "ivr2:/9/state.json"   # המצב נשמר בימות, לא ב-GitHub
 STT_MODEL = "whisper-large-v3-turbo"
-LLM_MODEL = "llama-3.3-70b-versatile"
 SEARCH_MODEL = "groq/compound"   # מודל עם חיפוש ברשת מובנה
-STATE_VERSION = 3
+STATE_VERSION = 4
 MAX_AGE_H = 24
 
 # >>> ערוך כאן את הכתבים: כינוי וסגנון <<<
@@ -24,10 +23,26 @@ RULES = ("כתוב בעברית נקייה, בלשון המקובלת בציבו
 
 client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
+PREFERRED = ["openai/gpt-oss-120b", "openai/gpt-oss-20b",
+             "llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+
+def pick_model():
+    try:
+        ids = {m.id for m in client.models.list().data}
+    except Exception as e:
+        print("models list fail", e)
+        return PREFERRED[0]
+    for m in PREFERRED:
+        if m in ids:
+            return m
+    print("אף מודל מהרשימה לא זמין. מודלים זמינים:", sorted(ids))
+    return PREFERRED[0]
+
+LLM_MODEL = pick_model()
+print("LLM model:", LLM_MODEL)
+
 def ask(system, user, search=False, as_json=False):
     kw = {}
-    if as_json and not search:
-        kw["response_format"] = {"type": "json_object"}
     r = client.chat.completions.create(
         model=SEARCH_MODEL if search else LLM_MODEL,
         messages=[{"role": "system", "content": system},
@@ -115,7 +130,10 @@ def main():
             if is_quota(e):
                 quota_hit = True
                 break
-            s["seen"].append(name)
+            s.setdefault("fails", {})
+            s["fails"][name] = s["fails"].get(name, 0) + 1
+            if s["fails"][name] >= 3:
+                s["seen"].append(name)
             continue
         s["seen"].append(name)
         new += 1
