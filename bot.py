@@ -15,9 +15,9 @@ MAX_AGE_H = 24
 
 # >>> ערוך כאן את הכתבים: כינוי וסגנון <<<
 REPORTERS = [
-    {"name": "כתב א'", "style": "תמציתי, ענייני, משפטים קצרים."},
-    {"name": "כתב ב'", "style": "חם ואישי, פונה למאזין בגוף שני."},
-    {"name": "כתב ג'", "style": "רשמי, בנימה של מבזק חדשות."},
+    {"name": "כתב המערכת", "style": "תמציתי, ענייני, משפטים קצרים."},
+    {"name": "הודעת מערכת", "style": "חם ואישי, פונה למאזין בגוף שני."},
+    {"name": "כתב המערכת", "style": "רשמי, בנימה של מבזק חדשות."},
 ]
 RULES = ("כתוב בעברית נקייה, בלשון המקובלת בציבור החסידי. "
          "אל תוסיף שום פרט שלא מופיע במקורות, ואל תוסיף ביקורת או שבח שלא נאמרו. "
@@ -77,7 +77,6 @@ def load_state():
     try:
         s = json.loads(y_download(STATE_PATH))
         if "pending" in s and s.get("v") == STATE_VERSION:
-            # מעודכן כך שיתחיל מ-242 בהתאם לקובץ האחרון שנצפה בשלוחה (241)
             if s.get("next", 0) < 242:
                 s["next"] = 242
             return s
@@ -129,16 +128,16 @@ def decide(pending):
 def write_story(group, reporter):
     src = json.dumps([{"summary": g["summary"], "facts": g["facts"]} for g in group], ensure_ascii=False)
     multi = len(group) > 1
-    p = (f"{RULES}\nסגנון הכתב ({reporter['name']}): {reporter['style']}\n"
+    prefix_text = reporter['name'] if reporter['name'] == "הודעת מערכת" else f"כאן {reporter['name']}"
+    p = (f"{RULES}\nסגנון הדיווח ({reporter['name']}): {reporter['style']}\n"
          f"מקורות מהמאזינים ({len(group)} הודעות):\n{src}\n\n"
          "חפש ברשת אימות והשלמות באתרי חדשות ומקורות רשמיים. אם אין לך גישה לחיפוש ברשת, כתוב רק על סמך המקורות מהמאזינים. "
          + ("יש כמה הודעות, אפשר לפרסם גם בלי אימות מהרשת. " if multi else
             "זו הודעה בודדת: נסח אותה בזהירות, כ'על פי דיווח שהגיע למערכת' אם לא אומתה ברשת, "
             "ו-publishable=true. רק אם המקורות ברשת סותרים את הידיעה בבירור: publishable=false. "
             "אל תחסום ידיעה רק בגלל שלא נמצאה ברשת. ")
-         + 'החזר JSON בלבד: {"publishable":bool,"text":"הידיעה, 3-5 משפטים, בפתיח: כאן '
-         + reporter["name"] + '"}')
-    return jparse(ask("אתה כתב במערכת חדשות טלפונית.", p, search=True))
+         + f'החזר JSON בלבד: {{"publishable":bool,"text":"הידיעה, 3-5 משפטים, בפתיח: {prefix_text}"}}')
+    return jparse(ask("אתה עורך במערכת חדשות טלפונית.", p, search=True))
 
 # ---------- ריצה ----------
 def main():
@@ -207,7 +206,6 @@ def main():
                     p["tries"] = p.get("tries", 0) + 1
                 continue
             n = s["next"]; s["next"] += 1; s["rr"] += 1
-            # מעלה כקובץ TTS עם סיומת tts המקורית שימות המשיח דורשים
             y_text_upload(f"ivr2:/{OUT_EXT}/{n:03d}.tts", res["text"])
             s["pending"] = [p for p in s["pending"] if p["id"] not in g["ids"]]
             print("published", f"{n:03d}.tts")
