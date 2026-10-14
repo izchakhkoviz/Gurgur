@@ -10,7 +10,7 @@ UNRELATED_EXT = "0/1"   # שלוחה 0/1: שאלות, בקשות עדכון, ב�
 
 STATE_PATH = "ivr2:/9/state.json"
 STT_MODEL = "whisper-large-v3-turbo"
-STATE_VERSION = 13
+STATE_VERSION = 14
 
 # הודעה שמזכירה אחד מהשמות האלה לא תעלה
 BLOCKED_NAMES = ["מוישי", "משה לייב פרידמן", "משה ליב פרידמן", "משה לייב פריידמן"]
@@ -127,7 +127,11 @@ def triage(text):
          '  "is_pure_update": bool (האם מדובר בעדכון חדשותי שוטף נטו, ולא בשאלה, בקשת מידע או בירור פרטים),\n'
          '  "topic": "", "summary": "", "facts": []\n'
          '}\n\nהודעה:\n' + text)
-    return jparse(ask("אתה עורך תוכן חסידי.", p, as_json=True))
+    res = jparse(ask("אתה עורך תוכן חסידי.", p, as_json=True))
+    res.setdefault("topic", "")
+    res.setdefault("summary", "")
+    res.setdefault("facts", [])
+    return res
 
 def norm(t):
     return " ".join(re.sub(r"[^\u05d0-\u05ea ]", " ", t).split())
@@ -147,14 +151,17 @@ def is_quota(e):
     return "429" in str(e) or "rate_limit" in str(e).lower()
 
 def decide(pending):
-    items = [{"id": i["id"], "topic": i["topic"], "summary": i["summary"],
-              "facts": i["facts"], "age_min": int((time.time() - i["ts"]) / 60)} for i in pending]
+    items = [{"id": i["id"], "topic": i.get("topic", ""), "summary": i.get("summary", ""),
+              "facts": i.get("facts", []), "age_min": int((time.time() - i["ts"]) / 60)} for i in pending]
     p = ('קבץ את ההודעות לפי אירוע. החזר JSON: {"groups":[{"ids":[],"ready":bool}]}. '
          'ready=true לכל קבוצה, גם אם יש בה הודעה אחת בלבד.\n' + json.dumps(items, ensure_ascii=False))
-    return jparse(ask("אתה עורך חדשות זהיר.", p, as_json=True)).get("groups", [{"ids": [i["id"] for i in pending], "ready": True}])
+    parsed = jparse(ask("אתה עורך חדשות זהיר.", p, as_json=True))
+    if isinstance(parsed, dict) and "groups" in parsed:
+        return parsed["groups"]
+    return [{"ids": [i["id"] for i in pending], "ready": True}]
 
 def write_story(group):
-    src = json.dumps([{"summary": g["summary"], "facts": g["facts"]} for g in group], ensure_ascii=False)
+    src = json.dumps([{"summary": g.get("summary", ""), "facts": g.get("facts", [])} for g in group], ensure_ascii=False)
     p = (f"{RULES}\n\n"
          f"מקורות מהמאזינים:\n{src}\n\n"
          "נסח את הידיעה כמבזק חדשות טלפוני קולח ומקצועי. "
@@ -206,7 +213,8 @@ def main():
         try:
             groups = decide(s["pending"])
         except Exception as e:
-            print("decide fail", e); groups = []
+            print("decide fail", e)
+            groups = [{"ids": [p["id"] for p in s["pending"]], "ready": True}]
             quota_hit = is_quota(e)
         by_id = {p["id"]: p for p in s["pending"]}
         for g in groups:
