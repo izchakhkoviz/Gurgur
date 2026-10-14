@@ -28,8 +28,8 @@ RULES = ("אתה עורך מקצועי במערכת ניוז טלפונית חס
 
 client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
-PREFERRED = ["openai/gpt-oss-120b", "openai/gpt-oss-20b",
-             "llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+# מודלים מהירים ובעלי מכסה יומית גדולה בהרבה
+PREFERRED = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
 
 IDS = set()
 
@@ -65,7 +65,7 @@ def jparse(t):
 def y_list(ext):
     r = requests.get(f"{API}/GetIVR2Dir", params={"token": TOKEN, "path": f"ivr2:/{ext}"}).json()
     files = [f["name"] for f in r.get("files", []) if f["name"].lower().endswith(".wav")]
-    # מיון הקבצים מהישן לחדש לפי מספרים כדי לטפל רק בחדשים
+    # מיון הקבצים מהישן לחדש לפי מספרים
     return sorted(files, key=lambda x: int(re.search(r'\d+', x).group()) if re.search(r'\d+', x) else 0)
 
 def y_download(path):
@@ -135,7 +135,7 @@ def write_story(group):
     p = (f"{RULES}\n\n"
          f"מקורות מהמאזינים:\n{src}\n\n"
          "נסח את הידיעה בצורה אנושית ומקצועית לחלוטין. "
-         'החזר JSON בלבד: {"publishable":true, "text":"טקסט הידיעה המנוסח בצורה טבעית וקולחת"}')
+         '{"publishable":true, "text":"טקסט הידיעה המנוסח בצורה טבעית וקולחת"}')
     return jparse(ask("אתה עורך ראשי במערכת ניוז חסידית.", p))
 
 # ---------- ריצה ----------
