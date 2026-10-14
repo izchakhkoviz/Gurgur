@@ -10,11 +10,10 @@ UNRELATED_EXT = "0/1"   # שלוחה 0/1: הודעות כלליות בלבד
 
 STATE_PATH = "ivr2:/9/state.json"
 STT_MODEL = "whisper-large-v3-turbo"
-STATE_VERSION = 21      # גרסה 21: העלאת כל התוכן המנוסח של גור לשלוחה 1
+STATE_VERSION = 22      # גרסה 22: עיבוד נפרד לכל קובץ ומניעת ניסוחי "אין עדכונים"
 
-# הודעה שמזכירה אחד מהשמות האלה לא תעלה
 BLOCKED_NAMES = ["מוישי", "משה לייב פרידמן", "משה ליב פרידמן", "משה לייב פריידמן"]
-HOLD_SENSITIVE = True   # דיווחי פטירה/פציעה/פיגוע בלבד ממתינים לאישור
+HOLD_SENSITIVE = True
 MAX_AGE_H = 24
 
 RULES = ("אתה עורך חדשות ראשי בקו טלפוני חסידי מוביל (בסגנון מבזקי חדשות והפרגוד). "
@@ -26,19 +25,14 @@ client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
 PREFERRED = ["openai/gpt-oss-20b", "qwen/qwen3.8-27b", "openai/gpt-oss-120b"]
 
-IDS = set()
-
 def pick_model():
-    global IDS
     try:
         ids = {m.id for m in client.models.list().data}
-        IDS = ids
+        for m in PREFERRED:
+            if m in ids:
+                return m
     except Exception as e:
         print("models list fail", e)
-        return PREFERRED[0]
-    for m in PREFERRED:
-        if m in ids:
-            return m
     return PREFERRED[0]
 
 LLM_MODEL = pick_model()
@@ -83,7 +77,6 @@ def load_state():
     except Exception:
         pass
 
-    # בודק אם כבר יש state קיים
     try:
         s = json.loads(y_download(STATE_PATH))
         if "pending" in s and s.get("v") == STATE_VERSION:
@@ -95,11 +88,11 @@ def load_state():
     except Exception:
         pass
 
-    # מעבדים מחדש את 3 הקבצים האחרונים
+    # מעבדים מחדש את 3 הקבצים האחרונים באופן בודד ונקי
     last_3 = all_files[-3:] if len(all_files) >= 3 else all_files
     seen_files = [f for f in all_files if f not in last_3]
 
-    print(f"עיבוד מחדש של הקבצים: {last_3}")
+    print(f"עיבוד מחדש נקי של הקבצים: {last_3}")
 
     return {
         "v": STATE_VERSION,
@@ -122,7 +115,7 @@ def transcribe(raw):
 def triage(text):
     p = ('נתח הודעת מאזין לקו חדשות. החזר JSON בלבד:\n'
          '{\n'
-         '  "empty": bool (שקט, רעש או לא מובן),\n'
+         '  "empty": bool (שקט, רעש, ג\'יבריש או משפט קטוע ולא מובן),\n'
          '  "against_system": bool (פגיעה, זלזול, ביקורת או קללה נגד הנהלת/מערכת הקו),\n'
          '  "sensitive": bool (דיווח על פטירה, פציעה קשה או פיגוע בלבד),\n'
          '  "related_to_gur": bool (האם יש קשר לחסידות גור, מוסדותיה, אנשיה או אירועיה),\n'
@@ -146,29 +139,19 @@ def analyze_audio(raw):
     if len(t) < 6:
         return {"empty": True}
     m = triage(text)
-    m["empty"] = False
     return m
 
 def is_quota(e):
     return "429" in str(e) or "rate_limit" in str(e).lower()
 
-def decide(pending):
-    items = [{"id": i["id"], "topic": i.get("topic", ""), "summary": i.get("summary", ""),
-              "facts": i.get("facts", []), "age_min": int((time.time() - i["ts"]) / 60)} for i in pending]
-    p = ('קבץ את ההודעות לפי אירוע. החזר JSON: {"groups":[{"ids":[],"ready":bool}]}. '
-         'ready=true לכל קבוצה, גם אם יש בה הודעה אחת בלבד.\n' + json.dumps(items, ensure_ascii=False))
-    
-    parsed = jparse(ask("אתה עורך חדשות זהיר.", p, as_json=True))
-    if isinstance(parsed, dict) and "groups" in parsed:
-        return parsed["groups"]
-    return [{"ids": [i["id"] for i in pending], "ready": True}]
-
-def write_story(group):
-    src_data = [{"summary": g.get("summary", ""), "facts": g.get("facts", [])} for g in group]
-    src = json.dumps(src_data, ensure_ascii=False)
+def write_story_single(item):
+    summary = item.get("summary", "")
+    facts = item.get("facts", [])
+    src = json.dumps({"summary": summary, "facts": facts}, ensure_ascii=False)
     p = (f"{RULES}\n\n"
-         f"מידע מהמאזינים:\n{src}\n\n"
-         "נסח את הידיעה כמבזק חדשות טלפוני קולח ומקצועי. "
+         f"עובדות שהתקבלו מפי המאזין:\n{src}\n\n"
+         "נסח את העובדות הללו כמבזק חדשות טלפוני קולח, ברור ומקצועי. "
+         "חובה להתבסס אך ורק על העובדות שנמסרו! חל איסור מוחלט לכתוב 'אין עדכונים' או 'לא נמסרו פרטים'.\n"
          'החזר JSON בלבד: {"publishable":true, "text":"טקסט הידיעה המנוסח"}')
     return jparse(ask("אתה עורך ראשי במערכת ניוז חסידית.", p, as_json=True))
 
@@ -209,51 +192,47 @@ def main():
 
     s["pending"] = [p for p in s["pending"] if now - p["ts"] < MAX_AGE_H * 3600]
 
-    # מעבדים ומעלים כל עוד יש הודעות ממתינות!
+    # מעבדים כל קובץ בנפרד!
     if s["pending"] and not quota_hit:
-        s["last_decide"] = now
-        try:
-            groups = decide(s["pending"])
-        except Exception as e:
-            print("decide fail", e)
-            groups = [{"ids": [p["id"] for p in s["pending"]], "ready": True}]
-            quota_hit = is_quota(e)
-        by_id = {p["id"]: p for p in s["pending"]}
-        for g in groups:
-            if quota_hit or not g.get("ready"):
-                continue
-            group = [by_id[i] for i in g["ids"] if i in by_id]
-            if not group:
-                continue
+        processed_ids = []
+        for item in list(s["pending"]):
+            if quota_hit:
+                break
             try:
-                res = write_story(group)
+                res = write_story_single(item)
             except Exception as e:
-                print("write fail", e)
+                print("write fail for", item["id"], e)
                 if is_quota(e):
                     quota_hit = True
                 continue
+
             text_out = res.get("text", "")
-            if not res.get("publishable") or not text_out:
+
+            # בדיקת איכות: פוסלים ניסוחים גנריים או ריקים
+            if not res.get("publishable") or not text_out or "אין עדכונים" in text_out or "לא נמסרו" in text_out:
+                print("הודעה נפסלה בגלל ניסוח לא תקין:", item["id"], text_out)
+                item["tries"] = item.get("tries", 0) + 1
+                if item["tries"] >= 3:
+                    processed_ids.append(item["id"])
                 continue
 
-            is_gur = any(p.get("related_to_gur", True) for p in group)
+            is_gur = item.get("related_to_gur", True)
 
-            # כל תוכן שקשור לגור עולה ישירות לשלוחה 1!
             if is_gur:
                 n = s["next"]
                 s["next"] += 1
                 target_path = f"ivr2:/{OUT_EXT}/{n:03d}.tts"
-                print("published (עדכון שוטף -> שלוחה 1):", f"{n:03d}.tts")
+                print(f"published ({item['id']} -> שלוחה 1):", f"{n:03d}.tts")
             else:
                 n = s.get("next_unrelated", 1)
                 s["next_unrelated"] = n + 1
                 target_path = f"ivr2:/{UNRELATED_EXT}/{n:03d}.tts"
-                print("published (בירורים/לא קשור -> שלוחה 0/1):", f"{n:03d}.tts")
+                print(f"published ({item['id']} -> שלוחה 0/1):", f"{n:03d}.tts")
 
             y_text_upload(target_path, text_out)
-            s["pending"] = [p for p in s["pending"] if p["id"] not in g["ids"]]
+            processed_ids.append(item["id"])
 
-        s["pending"] = [p for p in s["pending"] if p.get("tries", 0) < 3]
+        s["pending"] = [p for p in s["pending"] if p["id"] not in processed_ids]
 
     if quota_hit:
         print("QUOTA: המכסה החינמית נגמרה, ננסה שוב בהרצה הבאה")
