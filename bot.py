@@ -80,7 +80,8 @@ def load_state():
             return s
     except Exception:
         pass
-    return {"v": STATE_VERSION, "seen": [], "pending": [], "held": [], "next": 0, "rr": 0, "last_decide": 0}
+    # עודכן כך שהמספר הבא יהיה 211 (כלומר הקובץ הבא שיועלה יהיה 211.tts, שהוא ה-212 במספר)
+    return {"v": STATE_VERSION, "seen": [], "pending": [], "held": [], "next": 211, "rr": 0, "last_decide": 0}
 
 def save_state(s):
     y_text_upload(STATE_PATH, json.dumps(s, ensure_ascii=False))
