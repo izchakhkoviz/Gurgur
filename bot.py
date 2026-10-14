@@ -77,12 +77,13 @@ def load_state():
     try:
         s = json.loads(y_download(STATE_PATH))
         if "pending" in s and s.get("v") == STATE_VERSION:
-            if s.get("next", 0) < 211:
-                s["next"] = 211
+            # מעודכן כך שיתחיל מ-242 בהתאם לקובץ האחרון שנצפה בשלוחה (241)
+            if s.get("next", 0) < 242:
+                s["next"] = 242
             return s
     except Exception:
         pass
-    return {"v": STATE_VERSION, "seen": [], "pending": [], "held": [], "next": 211, "rr": 0, "last_decide": 0}
+    return {"v": STATE_VERSION, "seen": [], "pending": [], "held": [], "next": 242, "rr": 0, "last_decide": 0}
 
 def save_state(s):
     y_text_upload(STATE_PATH, json.dumps(s, ensure_ascii=False))
@@ -206,10 +207,9 @@ def main():
                     p["tries"] = p.get("tries", 0) + 1
                 continue
             n = s["next"]; s["next"] += 1; s["rr"] += 1
-            # מעלה כקובץ טקסט עם סיומת txt
             y_text_upload(f"ivr2:/{OUT_EXT}/{n:03d}.txt", res["text"])
             s["pending"] = [p for p in s["pending"] if p["id"] not in g["ids"]]
-            print("published", n)
+            print("published", f"{n:03d}.txt")
         s["pending"] = [p for p in s["pending"] if p.get("tries", 0) < 3]
 
     if quota_hit:
