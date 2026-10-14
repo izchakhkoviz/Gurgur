@@ -10,7 +10,7 @@ UNRELATED_EXT = "0/1"   # שלוחה 1 בתוך 0 להודעות שאינן קש
 
 STATE_PATH = "ivr2:/9/state.json"   # המצב נשמר בימות
 STT_MODEL = "whisper-large-v3-turbo"
-STATE_VERSION = 8
+STATE_VERSION = 9
 
 # הודעה שמזכירה אחד מהשמות האלה לא תעלה
 BLOCKED_NAMES = ["מוישי", "משה לייב פרידמן", "משה ליב פרידמן", "משה לייב פריידמן", "משה ליב פריידמן"]
@@ -64,7 +64,9 @@ def jparse(t):
 # ---------- ימות ----------
 def y_list(ext):
     r = requests.get(f"{API}/GetIVR2Dir", params={"token": TOKEN, "path": f"ivr2:/{ext}"}).json()
-    return [f["name"] for f in r.get("files", []) if f["name"].lower().endswith(".wav")]
+    files = [f["name"] for f in r.get("files", []) if f["name"].lower().endswith(".wav")]
+    # מיון הקבצים מהישן לחדש לפי מספרים כדי לטפל רק בחדשים
+    return sorted(files, key=lambda x: int(re.search(r'\d+', x).group()) if re.search(r'\d+', x) else 0)
 
 def y_download(path):
     return requests.get(f"{API}/DownloadFile", params={"token": TOKEN, "path": path}).content
