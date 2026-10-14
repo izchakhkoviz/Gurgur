@@ -5,21 +5,23 @@ SYSTEM = "0772023014"
 TOKEN = f"{SYSTEM}:{os.environ['YEMOT_PASSWORD']}"
 API = "https://www.call2all.co.il/ym/api"
 IN_EXT = "2"
-OUT_EXT = "1"           # שלוחה 1: עדכוני חדשות חסידות גור
-UNRELATED_EXT = "0/1"   # שלוחה 0/1: הודעות כלליות בלבד
+OUT_EXT = "1"           # שלוחה 1: אך ורק עדכוני חדשות שוטפים של חסידות גור
+UNRELATED_EXT = "0/1"   # שלוחה 0/1: שלוחת ניהול אישית (לכל שאר הדיווחים/בירורים)
 
 STATE_PATH = "ivr2:/9/state.json"
 STT_MODEL = "whisper-large-v3-turbo"
-STATE_VERSION = 23      # גרסה 23: שיפור פרומפט הניסוח למבזקים מקצועיים
+STATE_VERSION = 24      # גרסה 24: ניתוק לשלוחת ניהול 0/1 והשלמת מילים לפי הקשר
 
 BLOCKED_NAMES = ["מוישי", "משה לייב פרידמן", "משה ליב פרידמן", "משה לייב פריידמן"]
 HOLD_SENSITIVE = True
 MAX_AGE_H = 24
 
 RULES = ("אתה עורך חדשות ראשי בכיר בקו טלפוני חסידי מוביל. "
-         "תפקידך לקחת את הנתונים או הפרטים שהעביר המאזין ולנסח אותם מחדש כמבזק חדשות טלפוני קולח, חד, מרתק ומקצועי לחלוטין. "
+         "תפקידך לקחת את התמלול והנתונים שהעביר המאזין ולנסח אותם כמבזק חדשות טלפוני קולח, ברור ומקצועי. "
+         "הנחיה קריטית להשלמת תוכן: אם בתמלול מופיעה מילה לא ברורה, מקועקעת, משובשת או שגיאת תמלול קלה – "
+         "השתמש בהקשר הכללי של הידיעה והמשפט כדי לתקן אותה למילה המתאימה והגיונית ביותר בעברית. "
          "הקפד על לשון נקייה ומכובדת, ושמור על כבוד כ\"ק מרן אדמו\"ר שליט\"א, הרבנים והחצר החסידית. "
-         "אל תכלול בפתיח מילים מיותרות כמו 'לפי אלפון ששוגר' או 'פורסם ב...'. הצג ישירות את הנתונים או הידיעה בצורה מכובדת.")
+         "הצג ישירות את הידיעה או הנתונים בצורה מכובדת ללא פתיחים מלאכותיים.")
 
 client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
@@ -88,11 +90,10 @@ def load_state():
     except Exception:
         pass
 
-    # מעבדים מחדש את 3 הקבצים האחרונים
     last_3 = all_files[-3:] if len(all_files) >= 3 else all_files
     seen_files = [f for f in all_files if f not in last_3]
 
-    print(f"עיבוד מחדש בגרסה 23 של הקבצים: {last_3}")
+    print(f"עיבוד מחדש בגרסה 24 של הקבצים: {last_3}")
 
     return {
         "v": STATE_VERSION,
@@ -103,7 +104,6 @@ def load_state():
         "next_unrelated": 1,
         "last_decide": 0
     }
-
 
 def save_state(s):
     y_text_upload(STATE_PATH, json.dumps(s, ensure_ascii=False))
@@ -116,10 +116,10 @@ def transcribe(raw):
 def triage(text):
     p = ('נתח הודעת מאזין לקו חדשות. החזר JSON בלבד:\n'
          '{\n'
-         '  "empty": bool (שקט, רעש או ג\'יבריש מוחלט ללא שום תוכן),\n'
+         '  "empty": bool (שקט או רעש מוחלט בלבד),\n'
          '  "against_system": bool (פגיעה, זלזול, ביקורת או קללה נגד הנהלת/מערכת הקו),\n'
          '  "sensitive": bool (דיווח על פטירה, פציעה קשה או פיגוע בלבד),\n'
-         '  "related_to_gur": bool (האם יש קשר לחסידות גור, מוסדותיה, אנשיה או אירועיה),\n'
+         '  "related_to_gur": bool (האם מדובר בעדכון חדשותי שקשור באופן ישיר לחסידות גור),\n'
          '  "topic": "", "summary": "", "facts": []\n'
          '}\n\nהודעה:\n' + text)
     res = jparse(ask("אתה עורך תוכן חסידי.", p, as_json=True))
@@ -140,6 +140,7 @@ def analyze_audio(raw):
     if len(t) < 4:
         return {"empty": True}
     m = triage(text)
+    m["raw_text"] = text
     return m
 
 def is_quota(e):
@@ -148,10 +149,13 @@ def is_quota(e):
 def write_story_single(item):
     summary = item.get("summary", "")
     facts = item.get("facts", [])
-    src = json.dumps({"summary": summary, "facts": facts}, ensure_ascii=False)
+    raw_text = item.get("raw_text", "")
+    src = json.dumps({"raw_text": raw_text, "summary": summary, "facts": facts}, ensure_ascii=False)
+
     p = (f"{RULES}\n\n"
-         f"נתונים ועובדות מהמאזין:\n{src}\n\n"
-         "נסח את הדברים כמבזק חדשות אקטואלי, קולח וברור להקראה טלפונית. "
+         f"נתונים ותמלול מהמאזין:\n{src}\n\n"
+         "נסח את הידיעה כמבזק חדשות אקטואלי, קולח וברור להקראה טלפונית. "
+         "אם ישנן מילים לא ברורות בתמלול, תקן אותן לפי ההקשר הלוגי של המשפט.\n"
          'החזר JSON בלבד: {"publishable":true, "text":"טקסט הידיעה המנוסח"}')
     return jparse(ask("אתה עורך ראשי במערכת ניוז חסידית.", p, as_json=True))
 
@@ -211,18 +215,19 @@ def main():
                 item["tries"] = item.get("tries", 0) + 1
                 continue
 
-            is_gur = item.get("related_to_gur", True)
+            is_gur = item.get("related_to_gur", False)
 
+            # עדכוני גור עולים לשלוחה 1, כל השאר לשלוחת הניהול 0/1
             if is_gur:
                 n = s["next"]
                 s["next"] += 1
                 target_path = f"ivr2:/{OUT_EXT}/{n:03d}.tts"
-                print(f"published ({item['id']} -> שלוחה 1):", f"{n:03d}.tts")
+                print(f"published ({item['id']} -> שלוחה 1 - גור):", f"{n:03d}.tts")
             else:
                 n = s.get("next_unrelated", 1)
                 s["next_unrelated"] = n + 1
                 target_path = f"ivr2:/{UNRELATED_EXT}/{n:03d}.tts"
-                print(f"published ({item['id']} -> שלוחה 0/1):", f"{n:03d}.tts")
+                print(f"published ({item['id']} -> שלוחה 0/1 - ניהול):", f"{n:03d}.tts")
 
             y_text_upload(target_path, text_out)
             processed_ids.append(item["id"])
