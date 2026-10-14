@@ -10,16 +10,16 @@ UNRELATED_EXT = "0/1"   # שלוחה 0/1: הודעות כלליות בלבד
 
 STATE_PATH = "ivr2:/9/state.json"
 STT_MODEL = "whisper-large-v3-turbo"
-STATE_VERSION = 22      # גרסה 22: עיבוד נפרד לכל קובץ ומניעת ניסוחי "אין עדכונים"
+STATE_VERSION = 23      # גרסה 23: שיפור פרומפט הניסוח למבזקים מקצועיים
 
 BLOCKED_NAMES = ["מוישי", "משה לייב פרידמן", "משה ליב פרידמן", "משה לייב פריידמן"]
 HOLD_SENSITIVE = True
 MAX_AGE_H = 24
 
-RULES = ("אתה עורך חדשות ראשי בקו טלפוני חסידי מוביל (בסגנון מבזקי חדשות והפרגוד). "
-         "תפקידך להאזין לתמליל ההודעה ולנסח אותה כמבזק חדשות שוטף, קולח, אנושי ומקצועי לחלוטין. "
+RULES = ("אתה עורך חדשות ראשי בכיר בקו טלפוני חסידי מוביל. "
+         "תפקידך לקחת את הנתונים או הפרטים שהעביר המאזין ולנסח אותם מחדש כמבזק חדשות טלפוני קולח, חד, מרתק ומקצועי לחלוטין. "
          "הקפד על לשון נקייה ומכובדת, ושמור על כבוד כ\"ק מרן אדמו\"ר שליט\"א, הרבנים והחצר החסידית. "
-         "אין להשתמש בפתיחים מלאכותיים כגון 'כתב המערכת' או 'כאן כתב'.")
+         "אל תכלול בפתיח מילים מיותרות כמו 'לפי אלפון ששוגר' או 'פורסם ב...'. הצג ישירות את הנתונים או הידיעה בצורה מכובדת.")
 
 client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
@@ -88,11 +88,11 @@ def load_state():
     except Exception:
         pass
 
-    # מעבדים מחדש את 3 הקבצים האחרונים באופן בודד ונקי
+    # מעבדים מחדש את 3 הקבצים האחרונים
     last_3 = all_files[-3:] if len(all_files) >= 3 else all_files
     seen_files = [f for f in all_files if f not in last_3]
 
-    print(f"עיבוד מחדש נקי של הקבצים: {last_3}")
+    print(f"עיבוד מחדש בגרסה 23 של הקבצים: {last_3}")
 
     return {
         "v": STATE_VERSION,
@@ -103,6 +103,7 @@ def load_state():
         "next_unrelated": 1,
         "last_decide": 0
     }
+
 
 def save_state(s):
     y_text_upload(STATE_PATH, json.dumps(s, ensure_ascii=False))
@@ -115,7 +116,7 @@ def transcribe(raw):
 def triage(text):
     p = ('נתח הודעת מאזין לקו חדשות. החזר JSON בלבד:\n'
          '{\n'
-         '  "empty": bool (שקט, רעש, ג\'יבריש או משפט קטוע ולא מובן),\n'
+         '  "empty": bool (שקט, רעש או ג\'יבריש מוחלט ללא שום תוכן),\n'
          '  "against_system": bool (פגיעה, זלזול, ביקורת או קללה נגד הנהלת/מערכת הקו),\n'
          '  "sensitive": bool (דיווח על פטירה, פציעה קשה או פיגוע בלבד),\n'
          '  "related_to_gur": bool (האם יש קשר לחסידות גור, מוסדותיה, אנשיה או אירועיה),\n'
@@ -136,7 +137,7 @@ def analyze_audio(raw):
     t = norm(text)
     if any(norm(n) in t for n in BLOCKED_NAMES):
         return {"blocked_name": True}
-    if len(t) < 6:
+    if len(t) < 4:
         return {"empty": True}
     m = triage(text)
     return m
@@ -149,9 +150,8 @@ def write_story_single(item):
     facts = item.get("facts", [])
     src = json.dumps({"summary": summary, "facts": facts}, ensure_ascii=False)
     p = (f"{RULES}\n\n"
-         f"עובדות שהתקבלו מפי המאזין:\n{src}\n\n"
-         "נסח את העובדות הללו כמבזק חדשות טלפוני קולח, ברור ומקצועי. "
-         "חובה להתבסס אך ורק על העובדות שנמסרו! חל איסור מוחלט לכתוב 'אין עדכונים' או 'לא נמסרו פרטים'.\n"
+         f"נתונים ועובדות מהמאזין:\n{src}\n\n"
+         "נסח את הדברים כמבזק חדשות אקטואלי, קולח וברור להקראה טלפונית. "
          'החזר JSON בלבד: {"publishable":true, "text":"טקסט הידיעה המנוסח"}')
     return jparse(ask("אתה עורך ראשי במערכת ניוז חסידית.", p, as_json=True))
 
@@ -192,7 +192,6 @@ def main():
 
     s["pending"] = [p for p in s["pending"] if now - p["ts"] < MAX_AGE_H * 3600]
 
-    # מעבדים כל קובץ בנפרד!
     if s["pending"] and not quota_hit:
         processed_ids = []
         for item in list(s["pending"]):
@@ -207,13 +206,9 @@ def main():
                 continue
 
             text_out = res.get("text", "")
-
-            # בדיקת איכות: פוסלים ניסוחים גנריים או ריקים
-            if not res.get("publishable") or not text_out or "אין עדכונים" in text_out or "לא נמסרו" in text_out:
-                print("הודעה נפסלה בגלל ניסוח לא תקין:", item["id"], text_out)
+            if not res.get("publishable") or not text_out:
+                print("הודעה נפסלה:", item["id"])
                 item["tries"] = item.get("tries", 0) + 1
-                if item["tries"] >= 3:
-                    processed_ids.append(item["id"])
                 continue
 
             is_gur = item.get("related_to_gur", True)
