@@ -10,7 +10,7 @@ UNRELATED_EXT = "0/1"   # שלוחה 0/1: שאלות, בקשות עדכון, ב�
 
 STATE_PATH = "ivr2:/9/state.json"
 STT_MODEL = "whisper-large-v3-turbo"
-STATE_VERSION = 15
+STATE_VERSION = 18      # גרסה 18: הרצה חד-פעמית לשלושת הקבצים האחרונים
 
 # הודעה שמזכירה אחד מהשמות האלה לא תעלה
 BLOCKED_NAMES = ["מוישי", "משה לייב פרידמן", "משה ליב פרידמן", "משה לייב פריידמן"]
@@ -27,7 +27,7 @@ RULES = ("אתה עורך חדשות ראשי בקו טלפוני חסידי מ�
 
 client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
-PREFERRED = ["qwen/qwen3.8-27b", "openai/gpt-oss-20b", "openai/gpt-oss-120b"]
+PREFERRED = ["openai/gpt-oss-20b", "qwen/qwen3.8-27b", "openai/gpt-oss-120b"]
 
 IDS = set()
 
@@ -48,14 +48,12 @@ LLM_MODEL = pick_model()
 print("LLM model:", LLM_MODEL)
 
 def ask(system, user, as_json=False):
-    # הגבלה הדוקה על max_tokens כדי להישאר תמיד מתחת למגבלת הדקה
-    kw = {"max_tokens": 300} if as_json else {"max_tokens": 200}
+    kw = {"max_tokens": 250} if as_json else {"max_tokens": 180}
     r = client.chat.completions.create(
         model=LLM_MODEL,
         messages=[{"role": "system", "content": system},
                   {"role": "user", "content": user}], **kw)
-    # השהיה של 5 שניות למניעת עומס
-    time.sleep(5)
+    time.sleep(6)
     return r.choices[0].message.content or ""
 
 def jparse(t):
@@ -82,6 +80,13 @@ def y_text_upload(path, text):
     requests.post(f"{API}/UploadTextFile", data={"token": TOKEN, "what": path, "contents": text})
 
 def load_state():
+    all_files = []
+    try:
+        all_files = y_list(IN_EXT)
+    except Exception:
+        pass
+
+    # בודק אם כבר יש state קיים
     try:
         s = json.loads(y_download(STATE_PATH))
         if "pending" in s and s.get("v") == STATE_VERSION:
@@ -92,16 +97,16 @@ def load_state():
             return s
     except Exception:
         pass
-    
-    current_files = []
-    try:
-        current_files = y_list(IN_EXT)
-    except Exception:
-        pass
-    
+
+    # בהרצה הראשונה בגרסה 18: לוקחים את 3 הקבצים האחרונים ומכניסים לעיבוד מחודש!
+    last_3 = all_files[-3:] if len(all_files) >= 3 else all_files
+    seen_files = [f for f in all_files if f not in last_3]
+
+    print(f"הרצת בדיקה חד-פעמית: מעבד מחדש את 3 הקבצים האחרונים: {last_3}")
+
     return {
         "v": STATE_VERSION,
-        "seen": current_files,
+        "seen": seen_files,
         "pending": [],
         "held": [],
         "next": 242,
