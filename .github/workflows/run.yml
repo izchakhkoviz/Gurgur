@@ -3,9 +3,9 @@ name: gur-news-bot
 on:
   schedule:
     - cron: "*/5 * * * *"
+  workflow_dispatch:
   repository_dispatch:
     types: [run_bot]
-  workflow_dispatch:
 
 concurrency:
   group: bot
