@@ -1,23 +1,31 @@
 name: gur-news-bot
+
 on:
   schedule:
+    # מריץ את הבוט אוטומטית כל 5 דקות
     - cron: "*/5 * * * *"
-  workflow_dispatch:
+  workflow_dispatch: # מאפשר הפעלה ידנית בלחיצת כפתור
+
 concurrency:
   group: bot
   cancel-in-progress: false
+
 jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-          cache: pip
-      - run: pip install -r requirements.txt
-      - run: python bot.py
+          python-version: '3.10'
+          
+      - name: Install dependencies
+        run: pip install requests groq
+        
+      - name: Run bot
         env:
           YEMOT_PASSWORD: ${{ secrets.YEMOT_PASSWORD }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: python bot.py
