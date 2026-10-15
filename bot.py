@@ -45,14 +45,20 @@ def save_processed_file(file_name):
             json.dump(processed, f, ensure_ascii=False, indent=4)
 
 def get_ivr2_files(token, folder_path="2"):
-    """קריאת רשימת הקבצים משלוחה 2 בצורה נקייה"""
+    """שליפת רשימת הקבצים עם ניהול נתיב מותאם לשרת"""
     url = "https://call2all.co.il/ym/api/GetIVR2"
+    # נסה לשלוח בפורמט מלא של הנתיב במערכת
     params = {
         "token": token,
-        "path": str(folder_path).strip("/")
+        "path": f"ivr2:{folder_path}"
     }
     try:
         response = requests.get(url, params=params)
+        # אם החזיר שגיאה בפורמט הזה, ננסה גיבוי עם נתיב נקי
+        if response.status_code == 403:
+            params["path"] = folder_path
+            response = requests.get(url, params=params)
+            
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -67,6 +73,10 @@ def download_file_from_yemot(token, file_name, dest_path="temp_audio.wav"):
     }
     try:
         response = requests.get(url, params=params)
+        if response.status_code == 403:
+            params["path"] = f"ivr2:2/{file_name}"
+            response = requests.get(url, params=params)
+            
         if response.status_code == 200:
             with open(dest_path, "wb") as f:
                 f.write(response.content)
@@ -172,7 +182,6 @@ def main():
     for file in files:
         file_name = file.get("name") if isinstance(file, dict) else str(file)
         
-        # סינון קובצי שמע של ההקלטות (wav)
         if not file_name or not (file_name.startswith("wav.") or file_name.endswith(".wav") or file_name.endswith(".mp3")):
             continue
             
