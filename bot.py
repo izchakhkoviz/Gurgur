@@ -1,230 +1,210 @@
-import os, json, time, re, requests
+import os
+import json
+import requests
 from groq import Groq
 
-SYSTEM = "0772023014"
-TOKEN = f"{SYSTEM}:{os.environ['YEMOT_PASSWORD']}"
-API = "https://www.call2all.co.il/ym/api"
-IN_EXT = "2"
-OUT_EXT = "1"           # שלוחה 1: אך ורק עדכוני חדשות שוטפים של חסידות גור
-UNRELATED_EXT = "0/1"   # שלוחה 0/1: שלוחת ניהול אישית (לכל שאר הדיווחים)
+# טעינת משתני סביבה מתוך GitHub Secrets
+YEMOT_TOKEN = os.getenv("YEMOT_TOKEN")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-STATE_PATH = "ivr2:/9/state.json"
-STT_MODEL = "whisper-large-v3-turbo"
-STATE_VERSION = 25      # גרסה 25: ניסוח טקסט ישיר ללא מעטפת JSON ומניעת פסילות שווא
+PROCESSED_FILES_LOG = "processed_files.json"
 
-BLOCKED_NAMES = ["מוישי", "משה לייב פרידמן", "משה ליב פרידמן", "משה לייב פריידמן"]
-HOLD_SENSITIVE = True
-MAX_AGE_H = 24
 
-RULES = ("אתה עורך חדשות ראשי בכיר בקו טלפוני חסידי מוביל. "
-         "תפקידך לקחת את התמלול והנתונים שהעביר המאזין ולנסח אותם כמבזק חדשות טלפוני קולח, ברור ומקצועי. "
-         "אם בתמלול מופיעה מילה לא ברורה או שגיאת תמלול – תתקן אותה לפי ההקשר הלוגי של המשפט. "
-         "הקפד על לשון נקייה ומכובדת, ושמור על כבוד כ\"ק מרן אדמו\"ר שליט\"א והחצר החסידית. "
-         "החזר אך ורק את טקסט הידיעה המנוסח, ללא פתיחים, ללא JSON וללא הערות נוספות.")
+def load_processed_files():
+    if os.path.exists(PROCESSED_FILES_LOG):
+        try:
+            with open(PROCESSED_FILES_LOG, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
 
-client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
-PREFERRED = ["openai/gpt-oss-20b", "qwen/qwen3.8-27b", "openai/gpt-oss-120b"]
+def save_processed_file(file_name):
+    processed = load_processed_files()
+    if file_name not in processed:
+        processed.append(file_name)
+        with open(PROCESSED_FILES_LOG, "w", encoding="utf-8") as f:
+            json.dump(processed, f, ensure_ascii=False, indent=4)
 
-def pick_model():
+
+def get_ivr2_files(folder_path="2"):
+    """שליפת רשימת הקבצים משלוחה"""
+    url = "https://call2all.co.il/ym/api/GetIVR2"
+    clean_path = str(folder_path).strip("/")
+    params = {
+        "token": YEMOT_TOKEN,
+        "path": clean_path if clean_path else "2"
+    }
     try:
-        ids = {m.id for m in client.models.list().data}
-        for m in PREFERRED:
-            if m in ids:
-                return m
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        return response.json()
     except Exception as e:
-        print("models list fail", e)
-    return PREFERRED[0]
+        print(f"שגיאה בתקשורת מול ימות המשיח: {e}")
+        return None
 
-LLM_MODEL = pick_model()
-print("LLM model:", LLM_MODEL)
 
-def ask(system, user):
-    r = client.chat.completions.create(
-        model=LLM_MODEL,
-        messages=[{"role": "system", "content": system},
-                  {"role": "user", "content": user}],
-        max_tokens=300)
-    time.sleep(3)
-    return r.choices[0].message.content or ""
-
-def jparse(t):
+def download_file_from_yemot(file_name, dest_path="temp_audio.wav"):
+    """הורדת קובץ שמע משלוחה 2"""
+    url = "https://call2all.co.il/ym/api/DownloadFile"
+    params = {
+        "token": YEMOT_TOKEN,
+        "path": f"2/{file_name}"
+    }
     try:
-        t = re.sub(r"```(json)?", "", t).strip()
-        start = t.find("{")
-        end = t.rfind("}")
-        if start != -1 and end != -1:
-            return json.loads(t[start:end + 1])
-    except Exception:
-        pass
-    return {}
+        response = requests.get(url, params=params)
+        if response.status_code == 200:
+            with open(dest_path, "wb") as f:
+                f.write(response.content)
+            return dest_path
+    except Exception as e:
+        print(f"שגיאה בהורדת הקובץ {file_name}: {e}")
+    return None
 
-# ---------- ימות ----------
-def y_list(ext):
-    r = requests.get(f"{API}/GetIVR2Dir", params={"token": TOKEN, "path": f"ivr2:/{ext}"}).json()
-    files = [f["name"] for f in r.get("files", []) if f["name"].lower().endswith(".wav")]
-    return sorted(files, key=lambda x: int(re.search(r'\d+', x).group()) if re.search(r'\d+', x) else 0)
 
-def y_download(path):
-    return requests.get(f"{API}/DownloadFile", params={"token": TOKEN, "path": path}).content
+def upload_file_to_yemot(file_path, target_folder, target_file_name):
+    """העלאת קובץ שמע לשלוחה המיועדת (1 או 0/1)"""
+    url = "https://call2all.co.il/ym/api/UploadFile"
+    clean_folder = str(target_folder).strip("/")
 
-def y_text_upload(path, text):
-    requests.post(f"{API}/UploadTextFile", data={"token": TOKEN, "what": path, "contents": text})
-
-def load_state():
-    all_files = []
-    try:
-        all_files = y_list(IN_EXT)
-    except Exception:
-        pass
-
-    try:
-        s = json.loads(y_download(STATE_PATH))
-        if "pending" in s and s.get("v") == STATE_VERSION:
-            if s.get("next", 0) < 242:
-                s["next"] = 242
-            if s.get("next_unrelated", 0) < 1:
-                s["next_unrelated"] = 1
-            return s
-    except Exception:
-        pass
-
-    last_3 = all_files[-3:] if len(all_files) >= 3 else all_files
-    seen_files = [f for f in all_files if f not in last_3]
-
-    print(f"עיבוד מחדש בגרסה 25 של הקבצים: {last_3}")
-
-    return {
-        "v": STATE_VERSION,
-        "seen": seen_files,
-        "pending": [],
-        "held": [],
-        "next": 242,
-        "next_unrelated": 1,
-        "last_decide": 0
+    params = {
+        "token": YEMOT_TOKEN,
+        "path": f"{clean_folder}/{target_file_name}"
     }
 
-def save_state(s):
-    y_text_upload(STATE_PATH, json.dumps(s, ensure_ascii=False))
-
-# ---------- שלבים ----------
-def transcribe(raw):
-    r = client.audio.transcriptions.create(file=("a.wav", raw), model=STT_MODEL, language="he")
-    return getattr(r, "text", r)
-
-def triage(text):
-    p = ('נתח הודעת מאזין לקו חדשות. החזר JSON בלבד:\n'
-         '{\n'
-         '  "empty": bool (שקט או רעש מוחלט בלבד),\n'
-         '  "against_system": bool (פגיעה, זלזול, ביקורת או קללה נגד הנהלת/מערכת הקו),\n'
-         '  "sensitive": bool (דיווח על פטירה, פציעה קשה או פיגוע בלבד),\n'
-         '  "related_to_gur": bool (האם מדובר בעדכון שקשור באופן ישיר לחסידות גור)\n'
-         '}\n\nהודעה:\n' + text)
-    res = jparse(ask("אתה עורך תוכן חסידי.", p))
-    return res
-
-def norm(t):
-    return " ".join(re.sub(r"[^\u05d0-\u05ea ]", " ", t).split())
-
-def analyze_audio(raw):
-    text = transcribe(raw)
-    print("תמלול שהתקבל:", text)
-    t = norm(text)
-    if any(norm(n) in t for n in BLOCKED_NAMES):
-        return {"blocked_name": True}
-    if len(t) < 4:
-        return {"empty": True}
-    m = triage(text)
-    m["raw_text"] = text
-    return m
-
-def is_quota(e):
-    return "429" in str(e) or "rate_limit" in str(e).lower()
-
-def write_story_single(item):
-    raw_text = item.get("raw_text", "")
-    p = (f"תמלול המאזין:\n{raw_text}\n\n"
-         "נסח את הידיעה/הנתונים כמבזק חדשות אקטואלי, קולח וברור להקראה טלפונית. "
-         "תקן מילים לא ברורות לפי ההקשר הלוגי. החזר אך ורק את הניסוח הסופי.")
-    return ask(RULES, p).strip()
-
-# ---------- ריצה ----------
-def main():
-    s = load_state()
-    now = time.time()
-    quota_hit = False
-
-    for name in y_list(IN_EXT):
-        if name in s["seen"]:
-            continue
-        try:
-            m = analyze_audio(y_download(f"ivr2:/{IN_EXT}/{name}"))
-        except Exception as e:
-            print("fail", name, e)
-            if is_quota(e):
-                quota_hit = True
-                break
-            s.setdefault("fails", {})
-            s["fails"][name] = s["fails"].get(name, 0) + 1
-            if s["fails"][name] >= 3:
-                s["seen"].append(name)
-            continue
-        s["seen"].append(name)
-        if m.get("blocked_name"):
-            print("msg", name, "שם-חסום-נחסם")
-            continue
-        hold = bool(m.get("sensitive")) and HOLD_SENSITIVE
-        print("msg", name,
-              "ריק" if m.get("empty") else "",
-              "נגד-המערכת-נחסם" if m.get("against_system") else "",
-              "רגיש-ממתין-לאישור" if hold else "")
-        if m.get("empty") or m.get("against_system"):
-            continue
-        m.update(id=name, ts=now)
-        (s["held"] if hold else s["pending"]).append(m)
-
-    s["pending"] = [p for p in s["pending"] if now - p["ts"] < MAX_AGE_H * 3600]
-
-    if s["pending"] and not quota_hit:
-        processed_ids = []
-        for item in list(s["pending"]):
-            if quota_hit:
-                break
-            try:
-                text_out = write_story_single(item)
-            except Exception as e:
-                print("write fail for", item["id"], e)
-                if is_quota(e):
-                    quota_hit = True
-                continue
-
-            if not text_out or len(text_out) < 5:
-                print("ניסוח ריק עבור:", item["id"])
-                continue
-
-            is_gur = item.get("related_to_gur", False)
-
-            if is_gur:
-                n = s["next"]
-                s["next"] += 1
-                target_path = f"ivr2:/{OUT_EXT}/{n:03d}.tts"
-                print(f"published ({item['id']} -> שלוחה 1 - גור):", f"{n:03d}.tts")
+    try:
+        with open(file_path, "rb") as f:
+            files = {"file": (target_file_name, f)}
+            response = requests.post(url, params=params, files=files)
+            res_data = response.json()
+            if res_data.get("responseStatus") == "OK":
+                print(f"הקובץ הועלה בהצלחה לשלוחה {target_folder}/{target_file_name}")
+                return True
             else:
-                n = s.get("next_unrelated", 1)
-                s["next_unrelated"] = n + 1
-                target_path = f"ivr2:/{UNRELATED_EXT}/{n:03d}.tts"
-                print(f"published ({item['id']} -> שלוחה 0/1 - ניהול):", f"{n:03d}.tts")
+                print(f"שגיאה בהעלאה לשלוחה {target_folder}: {res_data}")
+    except Exception as e:
+        print(f"שגיאה בהעלאת קובץ לשרת: {e}")
+    return False
 
-            y_text_upload(target_path, text_out)
-            processed_ids.append(item["id"])
 
-        s["pending"] = [p for p in s["pending"] if p["id"] not in processed_ids]
+def transcribe_audio_with_groq(audio_path):
+    """תמלול קובץ שמע ב-Groq Whisper"""
+    if not GROQ_API_KEY:
+        print("שגיאה: GROQ_API_KEY אינו מוגדר!")
+        return None
 
-    if quota_hit:
-        print("QUOTA: המכסה החינמית נגמרה, ננסה שוב בהרצה הבאה")
-    if s["held"]:
-        print("ממתינות לאישור ידני:", len(s["held"]))
-    save_state(s)
+    client = Groq(api_key=GROQ_API_KEY)
+    try:
+        with open(audio_path, "rb") as file:
+            transcription = client.audio.transcriptions.create(
+                file=(audio_path, file.read()),
+                model="whisper-large-v3",
+                language="he"
+            )
+        return transcription.text
+    except Exception as e:
+        print(f"שגיאה בתמלול ב-Groq: {e}")
+        return None
+
+
+def analyze_and_process_text(text):
+    """
+    סינון, תיקון והשלמת מילים לפי הקשר, ובדיקת התאמה לשלוחה 1
+    """
+    if not GROQ_API_KEY or not text:
+        return {"approved": False, "text": text}
+
+    client = Groq(api_key=GROQ_API_KEY)
+    prompt = f"""
+אתה מיועד לסנן ולעבד הודעות קוליות עבור קו "חדשות גור".
+
+תפקידך:
+1. תקן שגיאות כתיב והשלם מילים חסרות או לא ברורות לפי הקשר המשפט, כך שהטקסט יהיה רציף וברור.
+2. בדוק אם הטקסט עומד בכל הכללים הבאים:
+   - קשור לחסידות גור.
+   - אינו מכיל שום תוכן או ביקורת נגד קו הטלפון "חדשות גור".
+   - אינו מכיל שום תוכן או ביקורת נגד משה לייב פרידמן (מוישי פרידמן).
+
+החזר תשובה במבנה JSON בלבד בצורה הבאה:
+{{
+  "approved": true/false,
+  "processed_text": "הטקסט המתוקן והמושלם"
+}}
+
+הטקסט לבדיקה:
+{text}
+"""
+    try:
+        completion = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            response_format={"type": "json_object"}
+        )
+        result = json.loads(completion.choices[0].message.content)
+        return result
+    except Exception as e:
+        print(f"שגיאה בניתוח ב-Groq: {e}")
+        return {"approved": False, "text": text}
+
+
+def main():
+    print("מתחיל סריקה, תמלול, סינון וניתוב הודעות משלוחה 2...")
+
+    if not YEMOT_TOKEN:
+        print("שגיאה קריטית: YEMOT_TOKEN אינו מוגדר!")
+        return
+
+    processed_files = load_processed_files()
+    data = get_ivr2_files("2")
+
+    if not data or data.get("responseStatus") == "EXCEPTION":
+        print(f"שגיאה בגישה לשלוחה 2: {data}")
+        return
+
+    files = data.get("files", [])
+    print(f"נמצאו {len(files)} קבצים בשלוחה 2.")
+
+    for file in files:
+        file_name = file.get("name")
+
+        if file_name in processed_files:
+            continue
+
+        print(f"\nמטפל בהודעה חדשה: {file_name}")
+
+        # 1. הורדת הקובץ
+        local_audio = download_file_from_yemot(file_name)
+        if local_audio:
+            # 2. תמלול ב-Whisper
+            raw_text = transcribe_audio_with_groq(local_audio)
+            if raw_text:
+                print(f"תמלול גולמי: {raw_text}")
+
+                # 3. ניתוח, השלמת מילים וסינון תנאים ב-Llama
+                analysis = analyze_and_process_text(raw_text)
+                is_approved = analysis.get("approved", False)
+                final_text = analysis.get("processed_text", raw_text)
+
+                print(f"טקסט מעובד: {final_text}")
+                print(f"אושר לשלוחה 1: {is_approved}")
+
+                # 4. העלאה לשלוחה המתאימה
+                if is_approved:
+                    target_folder = "1"
+                else:
+                    target_folder = "0/1"
+
+                upload_file_to_yemot(local_audio, target_folder, file_name)
+
+            # ניקוי קובץ זמני
+            if os.path.exists(local_audio):
+                os.remove(local_audio)
+
+            # שמירה במעקב כדי לא לעבד שוב
+            save_processed_file(file_name)
+
 
 if __name__ == "__main__":
     main()
