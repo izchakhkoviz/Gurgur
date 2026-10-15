@@ -4,14 +4,13 @@ import requests
 from groq import Groq
 
 # טעינת נתוני ההתחברות מתוך GitHub Secrets
-YEMOT_USERNAME = os.getenv("PHONE_SYSTEM_DID")  # מספר המערכת (0772023014)
-YEMOT_PASSWORD = os.getenv("YEMOT_PASSWORD")    # הסיסמה (317304103)
+YEMOT_USERNAME = os.getenv("PHONE_SYSTEM_DID")
+YEMOT_PASSWORD = os.getenv("YEMOT_PASSWORD")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 PROCESSED_FILES_LOG = "processed_files.json"
 
 def get_yemot_token():
-    """הנפקת טוקן התחברות עדכני מול ימות המשיח"""
     url = "https://call2all.co.il/ym/api/Login"
     params = {
         "username": YEMOT_USERNAME,
@@ -46,13 +45,10 @@ def save_processed_file(file_name):
             json.dump(processed, f, ensure_ascii=False, indent=4)
 
 def get_ivr2_files(token, folder_path="2"):
-    """קריאת תפריט/שלוחה בימות המשיח באמצעות GetIVR2Dir"""
     url = "https://call2all.co.il/ym/api/GetIVR2Dir"
-    clean_path = str(folder_path).strip("/")
-    
     params = {
         "token": token,
-        "path": clean_path
+        "path": str(folder_path).strip("/")
     }
     try:
         response = requests.get(url, params=params)
@@ -63,7 +59,6 @@ def get_ivr2_files(token, folder_path="2"):
         return None
 
 def download_file_from_yemot(token, file_name, dest_path="temp_audio.wav"):
-    """הורדת קובץ שמע משלוחה 2"""
     url = "https://call2all.co.il/ym/api/DownloadFile"
     params = {
         "token": token,
@@ -80,15 +75,11 @@ def download_file_from_yemot(token, file_name, dest_path="temp_audio.wav"):
     return None
 
 def upload_file_to_yemot(token, file_path, target_folder, target_file_name):
-    """העלאת קובץ שמע לשלוחה המיועדת (1 או 0/1)"""
     url = "https://call2all.co.il/ym/api/UploadFile"
-    clean_folder = str(target_folder).strip("/")
-    
     params = {
         "token": token,
-        "path": f"{clean_folder}/{target_file_name}"
+        "path": f"{target_folder}/{target_file_name}"
     }
-    
     try:
         with open(file_path, "rb") as f:
             files = {'file': (target_file_name, f)}
@@ -104,7 +95,6 @@ def upload_file_to_yemot(token, file_path, target_folder, target_file_name):
     return False
 
 def transcribe_audio_with_groq(audio_path):
-    """תמלול קובץ שמע ב-Groq Whisper"""
     if not GROQ_API_KEY:
         print("שגיאה: GROQ_API_KEY אינו מוגדר!")
         return None
@@ -123,7 +113,6 @@ def transcribe_audio_with_groq(audio_path):
         return None
 
 def analyze_and_process_text(text):
-    """סינון, תיקון והשלמת מילים לפי הקשר, ובדיקת התאמה לשלוחה 1"""
     if not GROQ_API_KEY or not text:
         return {"approved": False, "processed_text": text}
 
@@ -168,36 +157,36 @@ def main():
         print("שגיאה קריטית: לא ניתן להנפיק טוקן התחברות!")
         return
 
-    print("התחברות הצליחה! מתחיל סריקה, תמלול, סינון וניתוב הודעות משלוחה 2...")
+    print("התחברות הצליחה! מתחיל סריקה של שלוחה 2...")
     processed_files = load_processed_files()
     data = get_ivr2_files(token, "2")
     
-    if not data or data.get("responseStatus") == "EXCEPTION":
-        print(f"שגיאה בגישה לשלוחה 2: {data}")
+    if not data or data.get("responseStatus") != "OK":
+        print(f"שגיאה בגישה לשלוחה 2 או שהתשובה ריקה: {data}")
         return
 
-    # חילוץ רשימת הקבצים מתוך תשובת GetIVR2Dir
-    files = data.get("files", []) or data.get("data", [])
-    print(f"נמצאו {len(files)} קבצים בשלוחה 2.")
+    # הדפסת התשובה המלאה כדי לראות בדיוק מה השרת מחזיר בלוגים של GitHub
+    print(f"תשובת השרת הגולמית: {data}")
+
+    # בדיקת מפתחות אפשריים שונים לתשובה של ימות המשיח
+    files = data.get("files", []) or data.get("ivr2", []) or data.get("data", [])
+    print(f"נמצאו {len(files)} פריטים/קבצים בשלוחה.")
     
     for file in files:
-        file_name = file.get("name")
+        # ימות המשיח לפעמים מחזירים מחרוזת פשוטה או אובייקט
+        file_name = file if isinstance(file, str) else (file.get("name") or file.get("file"))
         
-        # סינון קובצי מערכת ולוגים (כמו ext.ini ו-record_log.ymgr)
         if not file_name or file_name.endswith(".ini") or file_name.endswith(".ymgr") or file_name in processed_files:
             continue
             
         print(f"\nמטפל בהודעה חדשה: {file_name}")
         
-        # 1. הורדת הקובץ
         local_audio = download_file_from_yemot(token, file_name)
         if local_audio:
-            # 2. תמלול ב-Whisper
             raw_text = transcribe_audio_with_groq(local_audio)
             if raw_text:
                 print(f"תמלול גולמי: {raw_text}")
                 
-                # 3. ניתוח, השלמת מילים וסינון תנאים ב-Llama
                 analysis = analyze_and_process_text(raw_text)
                 is_approved = analysis.get("approved", False)
                 final_text = analysis.get("processed_text", raw_text)
@@ -205,15 +194,12 @@ def main():
                 print(f"טקסט מעובד: {final_text}")
                 print(f"אושר לשלוחה 1: {is_approved}")
                 
-                # 4. העלאה לשלוחה המתאימה (1 או 0/1)
                 target_folder = "1" if is_approved else "0/1"
                 upload_file_to_yemot(token, local_audio, target_folder, file_name)
             
-            # ניקוי קובץ זמני
             if os.path.exists(local_audio):
                 os.remove(local_audio)
                 
-            # שמירה במעקב
             save_processed_file(file_name)
 
 if __name__ == "__main__":
