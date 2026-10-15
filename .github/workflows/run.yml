@@ -1,9 +1,9 @@
 name: Run Voice Processing Bot
 
 on:
-  workflow_dispatch:  # מאפשר גם הפעלה ידנית
   schedule:
-    - cron: '*/5 * * * *'  # מריץ את הבוט אוטומטית כל 5 דקות
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
 
 jobs:
   run-bot:
@@ -24,7 +24,7 @@ jobs:
 
       - name: Run bot
         env:
-          YEMOT_TOKEN: ${{ secrets.YEMOT_TOKEN }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           PHONE_SYSTEM_DID: ${{ secrets.PHONE_SYSTEM_DID }}
+          YEMOT_PASSWORD: ${{ secrets.YEMOT_PASSWORD }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: python bot.py
