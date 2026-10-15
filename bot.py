@@ -45,20 +45,16 @@ def save_processed_file(file_name):
             json.dump(processed, f, ensure_ascii=False, indent=4)
 
 def get_ivr2_files(token, folder_path="2"):
-    """שליפת רשימת הקבצים עם ניהול נתיב מותאם לשרת"""
-    url = "https://call2all.co.il/ym/api/GetIVR2"
-    # נסה לשלוח בפורמט מלא של הנתיב במערכת
+    """קריאת תכולת השלוחה באמצעות GetIVR2Dir שעובד יציב מול השרת"""
+    url = "https://call2all.co.il/ym/api/GetIVR2Dir"
+    clean_path = str(folder_path).strip("/")
+    
     params = {
         "token": token,
-        "path": f"ivr2:{folder_path}"
+        "path": clean_path
     }
     try:
         response = requests.get(url, params=params)
-        # אם החזיר שגיאה בפורמט הזה, ננסה גיבוי עם נתיב נקי
-        if response.status_code == 403:
-            params["path"] = folder_path
-            response = requests.get(url, params=params)
-            
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -73,10 +69,6 @@ def download_file_from_yemot(token, file_name, dest_path="temp_audio.wav"):
     }
     try:
         response = requests.get(url, params=params)
-        if response.status_code == 403:
-            params["path"] = f"ivr2:2/{file_name}"
-            response = requests.get(url, params=params)
-            
         if response.status_code == 200:
             with open(dest_path, "wb") as f:
                 f.write(response.content)
@@ -87,9 +79,11 @@ def download_file_from_yemot(token, file_name, dest_path="temp_audio.wav"):
 
 def upload_file_to_yemot(token, file_path, target_folder, target_file_name):
     url = "https://call2all.co.il/ym/api/UploadFile"
+    clean_folder = str(target_folder).strip("/")
+    
     params = {
         "token": token,
-        "path": f"{target_folder}/{target_file_name}"
+        "path": f"{clean_folder}/{target_file_name}"
     }
     try:
         with open(file_path, "rb") as f:
@@ -168,7 +162,7 @@ def main():
         print("שגיאה קריטית: לא ניתן להנפיק טוקן התחברות!")
         return
 
-    print("התחברות הצליחה! סורק את שלוחה 2...")
+    print("התחברות הצליחה! סורק את שלוחה 2 באמצעות GetIVR2Dir...")
     processed_files = load_processed_files()
     data = get_ivr2_files(token, "2")
     
@@ -176,19 +170,20 @@ def main():
         print(f"שגיאה בגישה לשלוחה 2: {data}")
         return
 
-    files = data.get("files", [])
-    print(f"נמצאו {len(files)} קבצים בשלוחה 2.")
+    files = data.get("files", []) or data.get("data", [])
+    print(f"נמצאו {len(files)} פריטים בשלוחה.")
     
     for file in files:
         file_name = file.get("name") if isinstance(file, dict) else str(file)
         
+        # סינון: נעבוד אך ורק על קובצי השמע של ההקלטות בשלוחה (wav) ונתעלם מקובצי מערכת
         if not file_name or not (file_name.startswith("wav.") or file_name.endswith(".wav") or file_name.endswith(".mp3")):
             continue
             
         if file_name in processed_files:
             continue
             
-        print(f"\nמטפל בהודעה חדשה בשלוחה 2: {file_name}")
+        print(f"\nמטפל בהודעה קולית חדשה: {file_name}")
         
         local_audio = download_file_from_yemot(token, file_name)
         if local_audio:
