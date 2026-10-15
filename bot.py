@@ -178,7 +178,7 @@ def analyze_and_process_text(text):
 - אנשי שלוומנו, ענ"ש, חסידים.
 - מוסדות גור, ישיבות, כוללים, בתי ספר בית יעקב, סמינרים.
 - מוקדי הקהילה (כגון: בני ברק, ירושלים, אשדוד, ערד, חצור, בית שמש, רחוב רש"י).
-- מונחים חסידיים (מעמד, שמחות אנ"ש וכדומה).
+- מונחים חסידיים (מעמד, שמחות אנ"ש, חתונות בחסידות וכדומה).
 
 הגדר את `approved` כ-`false` (לשלוחה 0/1) אך ורק אם:
 - יש בה ביקורת שלילית או השמצה נגד קו "חדשות גור" או נגד משה לייב פרידמן (מוישי פרידמן).
@@ -195,7 +195,8 @@ def analyze_and_process_text(text):
 """
     try:
         completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            # עדכון שם המודל לגרסה היציבה והנתמכת ב-Groq
+            model="llama-3.1-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
             response_format={"type": "json_object"}
