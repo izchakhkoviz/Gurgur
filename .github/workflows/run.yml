@@ -1,21 +1,26 @@
-name: Run Voice Processing Bot
+name: הפעלת בוט לעיבוד קול
 
 on:
   schedule:
+    # הרצה אוטומטית כל 5 דקות
     - cron: '*/5 * * * *'
-  workflow_dispatch:
+  workflow_dispatch: # מאפשר הפעלה ידנית בלחיצת כפתור
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: write # הרשאת כתיבה קפדנית ללוג
+
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: '3.x'
 
       - name: Install dependencies
         run: |
@@ -27,4 +32,5 @@ jobs:
           PHONE_SYSTEM_DID: ${{ secrets.PHONE_SYSTEM_DID }}
           YEMOT_PASSWORD: ${{ secrets.YEMOT_PASSWORD }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python bot.py
