@@ -62,8 +62,10 @@ def get_ivr2_files(token, folder_path):
 def download_file_from_yemot(token, file_name, dest_path="temp_audio.wav"):
     url = "https://call2all.co.il/ym/api/DownloadFile"
     
-    # נסה מספר אפשרויות נתיב כדי לוודא שהשרת מחזיר את הקובץ בהצלחה
+    # ניסיונות נתיב בפורמט התקני של ימות המשיח
     paths_to_try = [
+        f"ivr2:2/{file_name}",
+        f"ivr2:2/{file_name}.wav" if not "." in file_name else None,
         f"2/{file_name}",
         f"2/{file_name}.wav" if not "." in file_name else None
     ]
@@ -80,16 +82,15 @@ def download_file_from_yemot(token, file_name, dest_path="temp_audio.wav"):
             if response.status_code == 200 and len(response.content) > 100:
                 with open(dest_path, "wb") as f:
                     f.write(response.content)
-                print(f"הקובץ {file_name} הורד בהצלחה (מנתיב: {path}).")
+                print(f"הקובץ {file_name} הורד בהצלחה! (נתיב: {path})")
                 return dest_path
         except Exception as e:
-            print(f"נסיונות הורדה נכשלו עבור {path}: {e}")
+            pass
             
-    print(f"שגיאה: לא הצליח להוריד את הקובץ {file_name} בשום פורמט.")
+    print(f"שגיאה: לא הצליח להוריד את הקובץ {file_name}.")
     return None
 
 def get_next_available_filename(token, target_folder):
-    """מוצא את מספר הקובץ הגבוה ביותר בשלוחת היעד כדי שהחדש יהיה עליון/חדש ביותר"""
     data = get_ivr2_files(token, target_folder)
     max_num = 0
     if data and data.get("responseStatus") == "OK":
@@ -113,7 +114,7 @@ def upload_file_to_yemot(token, file_path, target_folder):
     
     params = {
         "token": token,
-        "path": f"{clean_folder}/{target_file_name}"
+        "path": f"ivr2:{clean_folder}/{target_file_name}"
     }
     try:
         with open(file_path, "rb") as f:
@@ -206,7 +207,6 @@ def main():
     for file in files:
         file_name = file.get("name") if isinstance(file, dict) else str(file)
         
-        # התעלמות מקובצי מערכת
         if not file_name or file_name.endswith(".ini") or file_name.endswith(".ymgr"):
             continue
             
@@ -227,7 +227,7 @@ def main():
             if raw_text:
                 print(f"תמלול גולמי: {raw_text}")
                 
-                # 3. סינון ועיבוד ב-Llama
+                # 3. ניתוח, השלמת מילים וסינון תנאים ב-Llama
                 analysis = analyze_and_process_text(raw_text)
                 is_approved = analysis.get("approved", False)
                 final_text = analysis.get("processed_text", raw_text)
@@ -235,15 +235,13 @@ def main():
                 print(f"טקסט מעובד: {final_text}")
                 print(f"אושר לשלוחה 1: {is_approved}")
                 
-                # 4. ניתוב לשלוחה 1 (אם אושר) או לשלוחה 0/1 (אם לא) בתור הקובץ החדש ביותר
+                # 4. העלאה לשלוחה 1 (אם אושר) או 0/1 (אם לא) כקובץ החדש ביותר
                 target_folder = "1" if is_approved else "0/1"
                 upload_file_to_yemot(token, local_audio, target_folder)
             
-            # ניקוי קובץ זמני
             if os.path.exists(local_audio):
                 os.remove(local_audio)
                 
-            # סימון כטופל
             save_processed_file(file_name)
 
 if __name__ == "__main__":
