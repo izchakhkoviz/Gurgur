@@ -62,7 +62,6 @@ def get_ivr2_files(token, folder_path):
 def download_file_from_yemot(token, file_name, dest_path="temp_audio.wav"):
     url = "https://call2all.co.il/ym/api/DownloadFile"
     
-    # ניסיונות נתיב בפורמט התקני של ימות המשיח
     paths_to_try = [
         f"ivr2:2/{file_name}",
         f"ivr2:2/{file_name}.wav" if not "." in file_name else None,
@@ -90,7 +89,8 @@ def download_file_from_yemot(token, file_name, dest_path="temp_audio.wav"):
     print(f"שגיאה: לא הצליח להוריד את הקובץ {file_name}.")
     return None
 
-def get_next_available_filename(token, target_folder):
+def get_next_available_filename(token, target_folder, extension="tts"):
+    """מוצא את המונה הגבוה ביותר בשלוחת היעד ומחזיר שם עוקב עם סיומת tts"""
     data = get_ivr2_files(token, target_folder)
     max_num = 0
     if data and data.get("responseStatus") == "OK":
@@ -104,31 +104,43 @@ def get_next_available_filename(token, target_folder):
                     max_num = num
     
     next_num = max_num + 1
-    return f"{next_num:03d}.wav"
+    return f"{next_num:03d}.{extension}"
 
-def upload_file_to_yemot(token, file_path, target_folder):
+def upload_tts_to_yemot(token, text_content, target_folder):
+    """יוצר קובץ טקסט מעובד ומעלה אותו כקובץ .tts לימות המשיח"""
     url = "https://call2all.co.il/ym/api/UploadFile"
     clean_folder = str(target_folder).strip("/")
     
-    target_file_name = get_next_available_filename(token, clean_folder)
+    target_file_name = get_next_available_filename(token, clean_folder, extension="tts")
+    temp_tts_file = f"temp_{target_file_name}"
     
+    # שמירת הטקסט בקובץ UTF-8
+    with open(temp_tts_file, "w", encoding="utf-8") as f:
+        f.write(text_content)
+        
     params = {
         "token": token,
         "path": f"ivr2:{clean_folder}/{target_file_name}"
     }
     try:
-        with open(file_path, "rb") as f:
+        with open(temp_tts_file, "rb") as f:
             files = {'file': (target_file_name, f)}
             response = requests.post(url, params=params, files=files)
             res_data = response.json()
             if res_data.get("responseStatus") == "OK":
-                print(f"הקובץ הועלה בהצלחה לשלוחה {target_folder} בשם {target_file_name} (כחדש ביותר)")
-                return True
+                print(f"הקובץ הועלה בהצלחה לשלוחה {target_folder} בשם {target_file_name} (TTS מקוריין)")
+                success = True
             else:
-                print(f"שגיאה בהעלאה לשלוחה {target_folder}: {res_data}")
+                print(f"שגיאה בהעלאת קובץ TTS לשלוחה {target_folder}: {res_data}")
+                success = False
     except Exception as e:
-        print(f"שגיאה בהעלאת קובץ לשרת: {e}")
-    return False
+        print(f"שגיאה בהעלאת קובץ TTS לשרת: {e}")
+        success = False
+    finally:
+        if os.path.exists(temp_tts_file):
+            os.remove(temp_tts_file)
+            
+    return success
 
 def transcribe_audio_with_groq(audio_path):
     if not GROQ_API_KEY:
@@ -154,14 +166,16 @@ def analyze_and_process_text(text):
 
     client = Groq(api_key=GROQ_API_KEY)
     prompt = f"""
-אתה מיועד לסנן ולעבד הודעות קוליות עבור קו "חדשות גור".
+אתה עורך ראשי ומסנן הודעות קוליות עבור קו "חדשות גור".
 
 תפקידך:
-1. תקן שגיאות כתיב והשלם מילים חסרות או לא ברורות לפי הקשר המשפט, כך שהטקסט יהיה רציף וברור.
-2. בדוק אם הטקסט עומד בכל הכללים הבאים:
-   - קשור לחסידות גור.
-   - אינו מכיל שום תוכן או ביקורת נגד קו הטלפון "חדשות גור".
-   - אינו מכיל שום תוכן או ביקורת נגד משה לייב פרידמן (מוישי פרידמן).
+1. תקן שגיאות כתיב והשלם מילים חסרות או לא ברורות לפי הקשר המשפט, כך שהטקסט יהיה רציף, קריא ומוכן לקריינות.
+2. בדוק האם ההודעה עומדת בתנאים הבאים כדי שתאושר לשלוחה 1:
+   - קשורה באופן ברור לחסידות גור, לאנשי שלוומנו (ענ"ש), או לאדמו"ר שליט"א.
+   - אינה מכיל שום תוכן או ביקורת שלילית נגד קו הטלפון "חדשות גור".
+   - אינה מכיל שום תוכן או ביקורת שלילית נגד משה לייב פרידמן (מוישי פרידמן).
+
+אם ההודעה אינה עוסקת בחסידות גור / אנשי שלומנו / האדמו"ר, או אם היא מכילה תוכן שלילי כלפי הקו או כלפי משה לייב פרידמן – עליך להגדיר `approved` כ-`false`. רק הודעות שרלוונטיות ונקיות מביקורת יאושרו כ-`true`.
 
 החזר תשובה במבנה JSON בלבד בצורה הבאה:
 {{
@@ -219,7 +233,7 @@ def main():
             
         print(f"\n--- מטפל בהודעה קולית: {file_name} ---")
         
-        # 1. הורדת הקובץ
+        # 1. הורדת הקובץ הקולי המקורי
         local_audio = download_file_from_yemot(token, file_name)
         if local_audio:
             # 2. תמלול ב-Whisper
@@ -227,17 +241,17 @@ def main():
             if raw_text:
                 print(f"תמלול גולמי: {raw_text}")
                 
-                # 3. ניתוח, השלמת מילים וסינון תנאים ב-Llama
+                # 3. עיבוד, תיקון וסיווג ב-Llama
                 analysis = analyze_and_process_text(raw_text)
                 is_approved = analysis.get("approved", False)
                 final_text = analysis.get("processed_text", raw_text)
                 
-                print(f"טקסט מעובד: {final_text}")
+                print(f"טקסט מעובד ל-TTS: {final_text}")
                 print(f"אושר לשלוחה 1: {is_approved}")
                 
-                # 4. העלאה לשלוחה 1 (אם אושר) או 0/1 (אם לא) כקובץ החדש ביותר
+                # 4. העלאת הטקסט המעובד כקובץ TTS (סיומת .tts) לשלוחה 1 או 0/1
                 target_folder = "1" if is_approved else "0/1"
-                upload_file_to_yemot(token, local_audio, target_folder)
+                upload_tts_to_yemot(token, final_text, target_folder)
             
             if os.path.exists(local_audio):
                 os.remove(local_audio)
