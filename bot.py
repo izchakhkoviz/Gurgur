@@ -195,8 +195,8 @@ def analyze_and_process_text(text):
 """
     try:
         completion = client.chat.completions.create(
-            # עדכון שם המודל לגרסה היציבה והנתמכת ב-Groq
-            model="llama-3.1-70b-versatile",
+            # שימוש במודל הקיים והפעיל כיום ב-Groq
+            model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
             response_format={"type": "json_object"}
