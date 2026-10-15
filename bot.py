@@ -10,20 +10,10 @@ PHONE_SYSTEM_DID = os.environ.get("PHONE_SYSTEM_DID")
 
 client = Groq(api_key=GROQ_API_KEY)
 
-def format_path(path):
-    """ודא שהנתיב מתחיל ב-slash כפי שנדרש בימות המשיח"""
-    if not path.startswith('/'):
-        return '/' + path
-    return path
-
 def get_next_folder_index(folder_path):
-    """
-    בודק דינמית את כל הקבצים בשלוחת היעד, מוצא את המספר הגבוה ביותר,
-    ומחזיר את המספר הבא הפנוי (כך שלא תהיה בעיה אם הוספת קבצים ממקור אחר).
-    """
+    """מציאת המספר הסידורי הפנוי הבא בשלוחת היעד"""
     try:
-        clean_folder = format_path(folder_path)
-        url = f"https://www.call2all.co.il/ym/api/GetIVR2?token={YEMOT_TOKEN}&what=folder&folder={clean_folder}"
+        url = f"https://www.call2all.co.il/ym/api/GetIVR2?token={YEMOT_TOKEN}&what=folder&folder={folder_path}"
         response = requests.get(url)
         data = response.json()
         if data.get("responseStatus") == "OK":
@@ -40,7 +30,8 @@ def get_next_folder_index(folder_path):
 
 def download_audio_file(file_name, local_filename="temp_audio.wav"):
     """הורדת קובץ השמע משלוחה 2 בימות המשיח"""
-    download_url = f"https://www.call2all.co.il/ym/api/DownloadFile?token={YEMOT_TOKEN}&path=/2/{file_name}"
+    # שימוש בנתיב נקי ללא סלאש מוביל כדי למנוע חסימה
+    download_url = f"https://www.call2all.co.il/ym/api/DownloadFile?token={YEMOT_TOKEN}&path=2/{file_name}"
     try:
         res = requests.get(download_url, stream=True)
         if res.status_code == 200:
@@ -48,6 +39,8 @@ def download_audio_file(file_name, local_filename="temp_audio.wav"):
                 for chunk in res.iter_content(chunk_size=8192):
                     f.write(chunk)
             return local_filename
+        else:
+            print(f"שגיאה בהורדת קובץ, סטטוס: {res.status_code}, תוכן: {res.text}")
     except Exception as e:
         print(f"שגיאה בהורדת הקובץ {file_name}: {e}")
     return None
@@ -107,15 +100,13 @@ def move_file_in_yemot(source_file_path, target_folder):
     file_extension = source_file_path.split('.')[-1]
     target_file_name = f"{next_index:03d}.{file_extension}"
     
-    src_path = format_path(source_file_path)
-    target_path = format_path(f"{target_folder}/{target_file_name}")
-    
-    url = f"https://www.call2all.co.il/ym/api/MoveFile?token={YEMOT_TOKEN}&source={src_path}&target={target_path}"
+    # שימוש בפורמט נקי ללא סלאשים מובילים מיותרים
+    url = f"https://www.call2all.co.il/ym/api/MoveFile?token={YEMOT_TOKEN}&source={source_file_path}&target={target_folder}/{target_file_name}"
     try:
         response = requests.get(url)
         res_data = response.json()
         if res_data.get("responseStatus") == "OK":
-            print(f"הקובץ הועבר בהצלחה ל-{target_path}")
+            print(f"הקובץ הועבר בהצלחה ל-{target_folder}/{target_file_name}")
             return True
         else:
             print(f"שגיאה בהעברת הקובץ בימות המשיח: {res_data}")
@@ -135,12 +126,13 @@ def trigger_tzintuk(extension):
 def process_voice_messages():
     print("מתחיל סריקה, תמלול ועיבוד הודעות בשלוחה 2...")
     
-    files_url = f"https://www.call2all.co.il/ym/api/GetIVR2?token={YEMOT_TOKEN}&what=folder&folder=/2"
+    # פנייה נקייה לשלוחה 2 בלי סלאש
+    files_url = f"https://www.call2all.co.il/ym/api/GetIVR2?token={YEMOT_TOKEN}&what=folder&folder=2"
     res = requests.get(files_url)
     data = res.json()
     
     if data.get("responseStatus") != "OK":
-        print(f"לא נמצאו קבצים או שגיאה בגישה לשלוחה 2: {data}")
+        print(f"שגיאה בגישה לשלוחה 2: {data}")
         return
 
     files = data.get("files", [])
@@ -184,7 +176,7 @@ def process_voice_messages():
                 trigger_tzintuk("400")
             
         else:
-            print("הודעה רגילה! מועברת לשלוחה 1 ומפעילה צינטוק 200...")
+            print("הודעה רגילה. מועברת לשלוחה 1 ומפעילה צינטוק 200...")
             if move_file_in_yemot(source_path, "1"):
                 trigger_tzintuk("200")
 
