@@ -165,7 +165,9 @@ def transcribe_audio_with_groq(audio_path):
 
 def analyze_and_process_text(text):
     if not GROQ_API_KEY or not text:
-        return {"approved": False, "processed_text": text}
+        # במקרה שאין טקסט, נחזיר אישור בטוח לפי מילות מפתח אם קשור לגור
+        is_gour = any(k in text for k in ["גור", "רבי", "אדמו", "שחרית", "מנחה", "מעריב", "שנדובק", "שטרנבוך"]) if text else False
+        return {"approved": is_gour, "processed_text": text}
 
     client = Groq(api_key=GROQ_API_KEY)
     prompt = f"""
@@ -195,8 +197,8 @@ def analyze_and_process_text(text):
 """
     try:
         completion = client.chat.completions.create(
-            # שימוש במודל הסטנדרטי והיציב שזמין תמיד ב-Groq
-            model="llama-3.1-8b-instant",
+            # שימוש במודל יציב ואוניברסלי ב-Groq
+            model="llama3-70b-8192",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
             response_format={"type": "json_object"}
@@ -205,7 +207,10 @@ def analyze_and_process_text(text):
         return result
     except Exception as e:
         print(f"שגיאה בניתוח ב-Groq: {e}")
-        return {"approved": False, "processed_text": text}
+        # במקרה של תקלה טכנית במודל ה-AI, נבדוק אם יש מילים מובהקות לגור ונאשר אוטומטית לשלוחה 1
+        is_gour = any(k in text for k in ["גור", "רבי", "אדמו", "שחרית", "מנחה", "מעריב", "שנדובק"])
+        print(f"הפעלת מנגנון גיבוי אוטומטי (האם קשור לגור?): {is_gour}")
+        return {"approved": is_gour, "processed_text": text}
 
 def main():
     print("מתחיל התחברות לימות המשיח...")
