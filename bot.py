@@ -11,7 +11,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 PROCESSED_FILES_LOG = "processed_files.json"
 
 def get_yemot_token():
-    """הנפקת טוקן בתוקף באופן אוטומטי מול ימות המשיח"""
+    """הנפקת טוקן התחברות עדכני מול ימות המשיח"""
     url = "https://call2all.co.il/ym/api/Login"
     params = {
         "username": YEMOT_USERNAME,
@@ -46,11 +46,13 @@ def save_processed_file(file_name):
             json.dump(processed, f, ensure_ascii=False, indent=4)
 
 def get_ivr2_files(token, folder_path="2"):
-    """שליפת רשימת הקבצים משלוחה"""
-    url = "https://call2all.co.il/ym/api/GetIVR2"
+    """קריאת תפריט/שלוחה בימות המשיח באמצעות GetIVR2Dir"""
+    url = "https://call2all.co.il/ym/api/GetIVR2Dir"
+    clean_path = str(folder_path).strip("/")
+    
     params = {
         "token": token,
-        "path": str(folder_path)
+        "path": clean_path
     }
     try:
         response = requests.get(url, params=params)
@@ -80,9 +82,11 @@ def download_file_from_yemot(token, file_name, dest_path="temp_audio.wav"):
 def upload_file_to_yemot(token, file_path, target_folder, target_file_name):
     """העלאת קובץ שמע לשלוחה המיועדת (1 או 0/1)"""
     url = "https://call2all.co.il/ym/api/UploadFile"
+    clean_folder = str(target_folder).strip("/")
+    
     params = {
         "token": token,
-        "path": f"{target_folder}/{target_file_name}"
+        "path": f"{clean_folder}/{target_file_name}"
     }
     
     try:
@@ -172,13 +176,14 @@ def main():
         print(f"שגיאה בגישה לשלוחה 2: {data}")
         return
 
-    files = data.get("files", [])
+    # חילוץ רשימת הקבצים מתוך תשובת GetIVR2Dir
+    files = data.get("files", []) or data.get("data", [])
     print(f"נמצאו {len(files)} קבצים בשלוחה 2.")
     
     for file in files:
         file_name = file.get("name")
         
-        # דילוג על קובצי מערכת ולוגים
+        # סינון קובצי מערכת ולוגים (כמו ext.ini ו-record_log.ymgr)
         if not file_name or file_name.endswith(".ini") or file_name.endswith(".ymgr") or file_name in processed_files:
             continue
             
@@ -200,7 +205,7 @@ def main():
                 print(f"טקסט מעובד: {final_text}")
                 print(f"אושר לשלוחה 1: {is_approved}")
                 
-                # 4. העלאה לשלוחה המתאימה
+                # 4. העלאה לשלוחה המתאימה (1 או 0/1)
                 target_folder = "1" if is_approved else "0/1"
                 upload_file_to_yemot(token, local_audio, target_folder, file_name)
             
