@@ -1,5 +1,6 @@
 import os
 import json
+import subprocess
 import requests
 from groq import Groq
 
@@ -37,13 +38,33 @@ def load_processed_files():
             return []
     return []
 
-def save_processed_file(file_name):
+def save_and_commit_processed_file(file_name):
     processed = load_processed_files()
     if file_name not in processed:
         processed.append(file_name)
         with open(PROCESSED_FILES_LOG, "w", encoding="utf-8") as f:
             json.dump(processed, f, ensure_ascii=False, indent=4)
-        print(f"הקובץ {file_name} נשמר לצמיתות ברשימת המעובדים.")
+        print(f"הקובץ {file_name} נוסף ללוג המעובדים ונשמר.")
+        
+        try:
+            subprocess.run(["git", "config", "--global", "user.name", "github-actions[bot]"], check=False)
+            subprocess.run(["git", "config", "--global", "user.email", "github-actions[bot]@users.noreply.github.com"], check=False)
+            subprocess.run(["git", "add", PROCESSED_FILES_LOG], check=False)
+            subprocess.run(["git", "commit", "-m", f"Automated update processed files: {file_name}"], check=False)
+            
+            github_token = os.getenv("GITHUB_TOKEN")
+            repo = os.getenv("GITHUB_REPOSITORY")
+            if github_token and repo:
+                remote_url = f"https://x-access-token:{github_token}@github.com/{repo}.git"
+                result = subprocess.run(["git", "push", remote_url, "HEAD:main"], capture_output=True, text=True)
+                if result.returncode == 0:
+                    print("לוג הקבצים המעובדים גובה ב-GitHub בהצלחה!")
+                else:
+                    print(f"שגיאה בביצוע push: {result.stderr}")
+            else:
+                subprocess.run(["git", "push"], check=False)
+        except Exception as e:
+            print(f"שגיאה בגיבוי לוג הקבצים ב-git: {e}")
 
 def get_ivr2_files(token, folder_path):
     url = "https://call2all.co.il/ym/api/GetIVR2Dir"
@@ -139,29 +160,30 @@ def transcribe_audio_with_groq(audio_path):
 
 def analyze_and_process_text(text):
     if not text or len(text.strip()) < 15:
-        print("הודעה קצרה או לא ברורה - מועברת לשלוחה 0/1")
+        print("הודעה קצרה מדי או לא ברורה - מועברת לשלוחה 0/1")
         return {"approved": False, "processed_text": text}
     
-    # חסימה מוחלטת לחתנים, אירוסים ופשנדווק לשלוחה 0/1 בלבד (גם אם כתוב גור)
+    # מילות פסילה וביקורת: חתנים, אירוסים, ביקורת על המערכת ועליך (מוישי פרידמן / משה לייב)
     bad_keywords = [
         "חתן", "התארס", "התארוס", "איתארס", "נהיה חתן", "ניהיה חתן", "נעשה חתן", 
-        "אירוסין", "וורט", "פשנדווק", "פשנדווארט", "פשנדורט", "משה לייב פרידמן", 
-        "מוישי פרידמן", "חדשות גור גרוע", "ביקורת על הקו"
+        "אירוסין", "וורט", "פשנדווק", "פשנדווארט", "פשנדורט", 
+        "משה לייב פרידמן", "מוישי פרידמן", "משה לייב", "מוישי",
+        "חדשות גור גרוע", "ביקורת על הקו", "נגד המערכת", "נגד הקו"
     ]
     for bad in bad_keywords:
         if bad in text:
-            print(f"זוהתה מילת פסילה/חתנים ('{bad}') - מעביר מיד לשלוחה 0/1")
+            print(f"זוהתה מילת פסילה/חתנים/ביקורת ('{bad}') - מעביר מיד לשלוחה 0/1")
             return {"approved": False, "processed_text": text}
 
-    # מילות אישור
+    # מילות אישור לחסידות גור ותפילות בלבד עבור שלוחה 1
     gour_keywords = [
         "גור", "רבי", "אדמו", "שחרית", "מנחה", "מעריב", 
         "שטרנבוך", "שטיבל", "טיש", "ענ\"ש", 
-        "אנשי שלומנו", "בית המדרש", "mניין", "מניין"
+        "אנשי שלומנו", "בית המדרש", "מניין"
     ]
     
     is_approved = any(keyword in text for keyword in gour_keywords)
-    print(f"תוצאת ניתוח תוכן (האם קשור לגור/תפילות?): {is_approved}")
+    print(f"תוצאת ניתוח תוכן (האם קשור לחסידות גור/תפילות?): {is_approved}")
     
     return {
         "approved": is_approved,
@@ -208,7 +230,6 @@ def main():
         if not (file_name.endswith(".wav") or file_name.endswith(".mp3") or file_name.isdigit() or file_name.startswith("wav.")):
             continue
             
-        # בדיקה כפולה: אם שם הקובץ קיים ברשימת המעובדים, מדלגים עליו מיד (בלי שום תלות בשאלה האם הוא נמחק או קיים בשלוחה 1 או 0/1)
         if file_name in processed_files:
             print(f"הקובץ {file_name} כבר עובד בעבר, מדלג עליו.")
             continue
@@ -236,8 +257,7 @@ def main():
             if os.path.exists(local_audio):
                 os.remove(local_audio)
                 
-        # שומר את שם הקובץ מיד ברשימת המעובדים הקבועה
-        save_processed_file(file_name)
+        save_and_commit_processed_file(file_name)
 
     if approved_to_folder_1_count > 0:
         print("הודעה אושרה לשלוחה 1, מפעיל צינטוק בשלוחה 200...")
