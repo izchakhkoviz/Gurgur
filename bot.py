@@ -44,8 +44,7 @@ def save_processed_file(file_name):
         with open(PROCESSED_FILES_LOG, "w", encoding="utf-8") as f:
             json.dump(processed, f, ensure_ascii=False, indent=4)
 
-def get_ivr2_files(token, folder_path="2"):
-    """קריאת תכולת השלוחה באמצעות GetIVR2Dir שעובד יציב מול השרת"""
+def get_ivr2_files(token, folder_path):
     url = "https://call2all.co.il/ym/api/GetIVR2Dir"
     clean_path = str(folder_path).strip("/")
     
@@ -58,17 +57,23 @@ def get_ivr2_files(token, folder_path="2"):
         response.raise_for_status()
         return response.json()
     except Exception as e:
-        print(f"שגיאה בתקשורת מול ימות המשיח: {e}")
+        print(f"שגיאה בתקשורת מול ימות המשיח בשלוחה {folder_path}: {e}")
         return None
 
 def download_file_from_yemot(token, file_name, dest_path="temp_audio.wav"):
     url = "https://call2all.co.il/ym/api/DownloadFile"
+    download_path = f"2/{file_name}"
     params = {
         "token": token,
-        "path": f"2/{file_name}"
+        "path": download_path
     }
     try:
         response = requests.get(url, params=params)
+        if response.status_code != 200 and not ("." in file_name):
+            download_path = f"2/{file_name}.wav"
+            params["path"] = download_path
+            response = requests.get(url, params=params)
+            
         if response.status_code == 200:
             with open(dest_path, "wb") as f:
                 f.write(response.content)
@@ -77,9 +82,30 @@ def download_file_from_yemot(token, file_name, dest_path="temp_audio.wav"):
         print(f"שגיאה בהורדת הקובץ {file_name}: {e}")
     return None
 
-def upload_file_to_yemot(token, file_path, target_folder, target_file_name):
+def get_next_available_filename(token, target_folder):
+    """בודק אילו קבצים קיימים בשלוחת היעד ומייצר שם חדש ועוקב כדי שיהיה החדש ביותר"""
+    data = get_ivr2_files(token, target_folder)
+    max_num = 0
+    if data and data.get("responseStatus") == "OK":
+        files = data.get("files", []) or data.get("data", [])
+        for f in files:
+            name = f.get("name") if isinstance(f, dict) else str(f)
+            # נסה לחלץ מספרים משם הקובץ (למשל מתוך 001, 002 וכו')
+            base_name = name.split(".")[0]
+            if base_name.isdigit():
+                num = int(base_name)
+                if num > max_num:
+                    max_num = num
+    
+    next_num = max_num + 1
+    return f"{next_num:03d}.wav"
+
+def upload_file_to_yemot(token, file_path, target_folder):
     url = "https://call2all.co.il/ym/api/UploadFile"
     clean_folder = str(target_folder).strip("/")
+    
+    # קבלת שם קובץ חדש ועוקב כדי שיופיע כחדש ביותר בשלוחה
+    target_file_name = get_next_available_filename(token, clean_folder)
     
     params = {
         "token": token,
@@ -91,7 +117,7 @@ def upload_file_to_yemot(token, file_path, target_folder, target_file_name):
             response = requests.post(url, params=params, files=files)
             res_data = response.json()
             if res_data.get("responseStatus") == "OK":
-                print(f"הקובץ הועלה בהצלחה לשלוחה {target_folder}/{target_file_name}")
+                print(f"הקובץ הועלה בהצלחה לשלוחה {target_folder} בשם {target_file_name} (כחדש ביותר)")
                 return True
             else:
                 print(f"שגיאה בהעלאה לשלוחה {target_folder}: {res_data}")
@@ -162,7 +188,7 @@ def main():
         print("שגיאה קריטית: לא ניתן להנפיק טוקן התחברות!")
         return
 
-    print("התחברות הצליחה! סורק את שלוחה 2 באמצעות GetIVR2Dir...")
+    print("התחברות הצליחה! סורק את שלוחה 2...")
     processed_files = load_processed_files()
     data = get_ivr2_files(token, "2")
     
@@ -171,19 +197,22 @@ def main():
         return
 
     files = data.get("files", []) or data.get("data", [])
-    print(f"נמצאו {len(files)} פריטים בשלוחה.")
+    print(f"נמצאו {len(files)} פריטים בשלוחה 2.")
     
     for file in files:
         file_name = file.get("name") if isinstance(file, dict) else str(file)
         
-        # סינון: נעבוד אך ורק על קובצי השמע של ההקלטות בשלוחה (wav) ונתעלם מקובצי מערכת
-        if not file_name or not (file_name.startswith("wav.") or file_name.endswith(".wav") or file_name.endswith(".mp3")):
+        if not file_name or file_name.endswith(".ini") or file_name.endswith(".ymgr"):
+            continue
+            
+        is_audio = file_name.endswith(".wav") or file_name.endswith(".mp3") or file_name.isdigit() or file_name.startswith("wav.")
+        if not is_audio:
             continue
             
         if file_name in processed_files:
             continue
             
-        print(f"\nמטפל בהודעה קולית חדשה: {file_name}")
+        print(f"\nמטפל בהודעה קולית: {file_name}")
         
         local_audio = download_file_from_yemot(token, file_name)
         if local_audio:
@@ -199,7 +228,8 @@ def main():
                 print(f"אושר לשלוחה 1: {is_approved}")
                 
                 target_folder = "1" if is_approved else "0/1"
-                upload_file_to_yemot(token, local_audio, target_folder, file_name)
+                # העלאה לשלוחה תוך מתן המספר הגבוה ביותר כדי שיהיה החדש ביותר
+                upload_file_to_yemot(token, local_audio, target_folder)
             
             if os.path.exists(local_audio):
                 os.remove(local_audio)
