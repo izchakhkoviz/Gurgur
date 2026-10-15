@@ -10,10 +10,20 @@ PHONE_SYSTEM_DID = os.environ.get("PHONE_SYSTEM_DID")
 
 client = Groq(api_key=GROQ_API_KEY)
 
+def format_path(path):
+    """ודא שהנתיב מתחיל ב-slash כפי שנדרש בימות המשיח"""
+    if not path.startswith('/'):
+        return '/' + path
+    return path
+
 def get_next_folder_index(folder_path):
-    """מציאת המספר הסידורי הפנוי הבא בשלוחת היעד"""
+    """
+    בודק דינמית את כל הקבצים בשלוחת היעד, מוצא את המספר הגבוה ביותר,
+    ומחזיר את המספר הבא הפנוי (כך שלא תהיה בעיה אם הוספת קבצים ממקור אחר).
+    """
     try:
-        url = f"https://www.call2all.co.il/ym/api/GetIVR2?token={YEMOT_TOKEN}&what=folder&folder={folder_path}"
+        clean_folder = format_path(folder_path)
+        url = f"https://www.call2all.co.il/ym/api/GetIVR2?token={YEMOT_TOKEN}&what=folder&folder={clean_folder}"
         response = requests.get(url)
         data = response.json()
         if data.get("responseStatus") == "OK":
@@ -29,8 +39,8 @@ def get_next_folder_index(folder_path):
     return 1
 
 def download_audio_file(file_name, local_filename="temp_audio.wav"):
-    """הורדת קובץ השמע משלוחה 2 בימות המשיח לשרת המקומי"""
-    download_url = f"https://www.call2all.co.il/ym/api/DownloadFile?token={YEMOT_TOKEN}&path=2/{file_name}"
+    """הורדת קובץ השמע משלוחה 2 בימות המשיח"""
+    download_url = f"https://www.call2all.co.il/ym/api/DownloadFile?token={YEMOT_TOKEN}&path=/2/{file_name}"
     try:
         res = requests.get(download_url, stream=True)
         if res.status_code == 200:
@@ -43,13 +53,13 @@ def download_audio_file(file_name, local_filename="temp_audio.wav"):
     return None
 
 def transcribe_audio_with_groq(file_path):
-    """תמלול קובץ השמע בפועל באמצעות מודל Whisper של Groq"""
+    """תמלול קובץ השמע באמצעות Whisper של Groq"""
     try:
         with open(file_path, "rb") as file:
             transcription = client.audio.transcriptions.create(
                 file=(file_path, file.read()),
                 model="whisper-large-v3",
-                language="he",  # הגדרה לעברית
+                language="he",
                 response_format="json",
             )
             return transcription.text
@@ -58,9 +68,8 @@ def transcribe_audio_with_groq(file_path):
         return ""
 
 def analyze_and_classify_with_llm(text_content):
-    """ניתוח ומיון חכם של הטקסט המתומלל"""
+    """סיווג וניתוח התוכן מול LLM"""
     if not text_content or len(text_content.strip()) < 3:
-        print("הטקסט קצר מדי או שנטקסט התמלול ריק.")
         return "REGULAR"
 
     prompt = f"""
@@ -93,18 +102,20 @@ def analyze_and_classify_with_llm(text_content):
         return "REGULAR"
 
 def move_file_in_yemot(source_file_path, target_folder):
-    """העברת קובץ בפועל בשרתי ימות המשיח תוך מתן שם ממוספר חדש"""
+    """העברת קובץ בשרתי ימות המשיח עם מספור אוטומטי מתקדם"""
     next_index = get_next_folder_index(target_folder)
     file_extension = source_file_path.split('.')[-1]
     target_file_name = f"{next_index:03d}.{file_extension}"
-    target_full_path = f"{target_folder}/{target_file_name}"
     
-    url = f"https://www.call2all.co.il/ym/api/MoveFile?token={YEMOT_TOKEN}&source={source_file_path}&target={target_full_path}"
+    src_path = format_path(source_file_path)
+    target_path = format_path(f"{target_folder}/{target_file_name}")
+    
+    url = f"https://www.call2all.co.il/ym/api/MoveFile?token={YEMOT_TOKEN}&source={src_path}&target={target_path}"
     try:
         response = requests.get(url)
         res_data = response.json()
         if res_data.get("responseStatus") == "OK":
-            print(f"הקובץ הועבר בהצלחה ל-{target_full_path}")
+            print(f"הקובץ הועבר בהצלחה ל-{target_path}")
             return True
         else:
             print(f"שגיאה בהעברת הקובץ בימות המשיח: {res_data}")
@@ -113,7 +124,7 @@ def move_file_in_yemot(source_file_path, target_folder):
     return False
 
 def trigger_tzintuk(extension):
-    """הפעלת שלוחת הצינטוקים בימות המשיח"""
+    """הפעלת שלוחת הצינטוקים"""
     try:
         url = f"https://www.call2all.co.il/ym/api/RunExtensions?token={YEMOT_TOKEN}&did={PHONE_SYSTEM_DID}&extension={extension}"
         response = requests.get(url)
@@ -124,19 +135,19 @@ def trigger_tzintuk(extension):
 def process_voice_messages():
     print("מתחיל סריקה, תמלול ועיבוד הודעות בשלוחה 2...")
     
-    files_url = f"https://www.call2all.co.il/ym/api/GetIVR2?token={YEMOT_TOKEN}&what=folder&folder=2"
+    files_url = f"https://www.call2all.co.il/ym/api/GetIVR2?token={YEMOT_TOKEN}&what=folder&folder=/2"
     res = requests.get(files_url)
     data = res.json()
     
     if data.get("responseStatus") != "OK":
-        print("לא נמצאו קבצים או שגיאה בגישה לשלוחה 2.")
+        print(f"לא נמצאו קבצים או שגיאה בגישה לשלוחה 2: {data}")
         return
 
     files = data.get("files", [])
     audio_files = [f for f in files if f.get("type") == "file" and f.get("name", "").lower().endswith(('.wav', '.mp3', '.m4a', '.gsm'))]
 
     if not audio_files:
-        print("אין קבצים חדשים לעיבוד בשלוחה 2.")
+        print("אין קבצי שמע חדשים לעיבוד בשלוחה 2.")
         return
 
     for file_info in audio_files:
@@ -144,28 +155,27 @@ def process_voice_messages():
         source_path = f"2/{file_name}"
         print(f"\n--- מעבד את הקובץ: {file_name} ---")
         
-        # 1. הורדת הקובץ
+        # 1. הורדה
         local_file = download_audio_file(file_name)
         if not local_file:
-            print("דילוג: נכשלה הורדת קובץ השמע.")
+            print("נכשלה הורדת קובץ השמע.")
             continue
             
-        # 2. תמלול קובץ השמע באמצעות Groq Whisper
+        # 2. תמלול
         print("מבצע תמלול שמע באמצעות Groq Whisper...")
         transcribed_text = transcribe_audio_with_groq(local_file)
         print(f"תוצאת התמלול: {transcribed_text}")
 
-        # מחיקת קובץ השמע הזמני מהשרת
         if os.path.exists(local_file):
             os.remove(local_file)
 
-        # 3. ניתוח וסיווג הטקסט המתומלל
+        # 3. ניתוח וסיווג
         status = analyze_and_classify_with_llm(transcribed_text)
         print(f"תוצאת סיווג התוכן: {status}")
 
-        # 4. העברה וצינטוק בהתאם לתוצאה
+        # 4. העברה וצינטוק
         if status == "BLOCKED":
-            print("תוכן חסום לבדיקה! מועבר לשלוחה 0/1 (ללא צינטוק)...")
+            print("תוכן חסום! מועבר לשלוחה 0/1 (ללא צינטוק)...")
             move_file_in_yemot(source_path, "0/1")
             
         elif status == "URGENT":
@@ -174,7 +184,7 @@ def process_voice_messages():
                 trigger_tzintuk("400")
             
         else:
-            print("הודעה רגילה. מועברת לשלוחה 1 ומפעילה צינטוק 200...")
+            print("הודעה רגילה! מועברת לשלוחה 1 ומפעילה צינטוק 200...")
             if move_file_in_yemot(source_path, "1"):
                 trigger_tzintuk("200")
 
