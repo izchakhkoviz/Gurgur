@@ -14,7 +14,7 @@ def get_yemot_token():
     url = "https://call2all.co.il/ym/api/Login"
     params = {
         "username": YEMOT_USERNAME,
-        "password": YEMOT_PASSWORD,
+        "password": YEMOT_PASSWORD
     }
     try:
         response = requests.get(url, params=params)
@@ -22,7 +22,8 @@ def get_yemot_token():
         data = response.json()
         if data.get("responseStatus") == "OK":
             return data.get("token")
-        print(f"שגיאה בהתחברות לימות המשיח: {data}")
+        else:
+            print(f"שגיאה בהתחברות לימות המשיח: {data}")
     except Exception as e:
         print(f"שגיאת תקשורת בהתחברות: {e}")
     return None
@@ -50,7 +51,10 @@ def save_processed_file(file_name):
 def get_ivr2_files(token, folder_path):
     url = "https://call2all.co.il/ym/api/GetIVR2Dir"
     clean_path = str(folder_path).strip("/")
-    params = {"token": token, "path": clean_path}
+    params = {
+        "token": token,
+        "path": clean_path
+    }
     try:
         response = requests.get(url, params=params)
         response.raise_for_status()
@@ -66,13 +70,14 @@ def download_file_from_yemot(token, file_name, dest_path="temp_audio.wav"):
         f"ivr2:2/{file_name}",
         f"ivr2:2/{file_name}.wav" if "." not in file_name else None,
         f"2/{file_name}",
-        f"2/{file_name}.wav" if "." not in file_name else None,
+        f"2/{file_name}.wav" if "." not in file_name else None
     ]
     for path in paths_to_try:
         if not path:
             continue
+        params = {"token": token, "path": path}
         try:
-            response = requests.get(url, params={"token": token, "path": path})
+            response = requests.get(url, params=params)
             if response.status_code == 200 and len(response.content) > 100:
                 with open(dest_path, "wb") as f:
                     f.write(response.content)
@@ -87,11 +92,13 @@ def get_next_available_filename(token, target_folder, extension="tts"):
     max_num = 0
     if data and data.get("responseStatus") == "OK":
         files = data.get("files", []) or data.get("data", [])
-        for item in files:
-            name = item.get("name") if isinstance(item, dict) else str(item)
+        for f in files:
+            name = f.get("name") if isinstance(f, dict) else str(f)
             base_name = name.split(".")[0]
             if base_name.isdigit():
-                max_num = max(max_num, int(base_name))
+                num = int(base_name)
+                if num > max_num:
+                    max_num = num
     return f"{max_num + 1:03d}.{extension}"
 
 
@@ -107,20 +114,22 @@ def upload_tts_to_yemot(token, text_content, target_folder):
 
         paths_to_try = [
             f"ivr2:{clean_folder}/{target_file_name}",
-            f"{clean_folder}/{target_file_name}",
+            f"{clean_folder}/{target_file_name}"
         ]
         for upload_path in paths_to_try:
+            params = {"token": token, "path": upload_path}
             try:
                 with open(temp_tts_file, "rb") as f:
                     response = requests.post(
                         url,
-                        params={"token": token, "path": upload_path},
-                        files={"file": (target_file_name, f)},
+                        params=params,
+                        files={"file": (target_file_name, f)}
                     )
-                if response.json().get("responseStatus") == "OK":
+                if response.ok and response.json().get("responseStatus") == "OK":
+                    print(f"הקובץ הועלה בהצלחה: {upload_path}")
                     return True
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"ניסיון העלאה נכשל ({upload_path}): {e}")
         return False
     finally:
         if os.path.exists(temp_tts_file):
@@ -129,15 +138,15 @@ def upload_tts_to_yemot(token, text_content, target_folder):
 
 def transcribe_audio_with_groq(audio_path):
     if not GROQ_API_KEY:
-        print("חסר GROQ_API_KEY; לא ניתן לתמלל.")
+        print("חסר GROQ_API_KEY בסביבה.")
         return None
     client = Groq(api_key=GROQ_API_KEY)
     try:
         with open(audio_path, "rb") as file:
             transcription = client.audio.transcriptions.create(
-                file=(audio_path, file.read()),
+                file=(os.path.basename(audio_path), file.read()),
                 model="whisper-large-v3",
-                language="he",
+                language="he"
             )
         return transcription.text
     except Exception as e:
@@ -149,41 +158,51 @@ def analyze_and_process_text(text):
     if not text:
         return {"approved": False, "processed_text": text}
 
-    # בדיקת מילות פסילה (כולל פשנדווק וביקורת שלילית).
+    # בדיקת מילות פסילה (כולל פשנדווק וביקורת שלילית)
     bad_keywords = [
         "פשנדווק", "משה לייב פרידמן", "מוישי פרידמן",
-        "חדשות גור גרוע", "ביקורת על הקו",
+        "חדשות גור גרוע", "ביקורת על הקו"
     ]
+    normalized_text = text.casefold()
     for bad in bad_keywords:
-        if bad in text:
-            print("נמצאה מילת פסילה או פשנדווק - נדחה לשלוחה 0/1")
+        if bad.casefold() in normalized_text:
+            print("מצא מילת פסילה או פשנדווק - נדחה לשלוחה 0/1")
             return {"approved": False, "processed_text": text}
 
-    # בדיקת מילות אישור.
+    # בדיקת מילות אישור (חסידות גור, תפילות, אדמו"ר וכו' - ללא פשנדווק)
     gour_keywords = [
         "גור", "רבי", "אדמו", "שחרית", "מנחה", "מעריב",
-        "שטרנבוך", "שטיבל", "טיש", "ענ\"ש", "אנשי שלומנו",
-        "בית המדרש", "מניין",
+        "שטרנבוך", "שטיבל", "טיש", 'ענ"ש',
+        "אנשי שלומנו", "בית המדרש", "מניין"
     ]
-    is_approved = any(keyword in text for keyword in gour_keywords)
+
+    is_approved = any(keyword.casefold() in normalized_text for keyword in gour_keywords)
     print(f"תוצאת ניתוח תוכן (האם קשור לגור/תפילות?): {is_approved}")
-    return {"approved": is_approved, "processed_text": text}
+
+    return {
+        "approved": is_approved,
+        "processed_text": text
+    }
 
 
-def trigger_extension_200(token):
-    """מפעיל את שלוחה 200 בסיום הריצה כדי ליזום את הצינטוק."""
-    url = "https://call2all.co.il/ym/api/RunExtension"
-    params = {"token": token, "extension": "200"}
+def trigger_tzintuk(token):
+    """ניסיון להפעיל קמפיין צינטוקים; יש לוודא את פרטי ה-API מול ימות המשיח."""
+    url = "https://call2all.co.il/ym/api/RunCampaign"
+    params = {
+        "token": token,
+        "varName": "200"
+    }
     try:
         response = requests.get(url, params=params)
         response.raise_for_status()
         data = response.json()
         if data.get("responseStatus") == "OK":
-            print("שלוחה 200 הופעלה בהצלחה (נשלח צינטוק/התרעה).")
-        else:
-            print(f"הפעלה של שלוחה 200 החזירה סטטוס: {data}")
+            print("קמפיין הצינטוקים הופעל בהצלחה.")
+            return True
+        print(f"הפעלת קמפיין הצינטוקים נכשלה או לא אושרה: {data}")
     except Exception as e:
-        print(f"שגיאה בהפעלת שלוחה 200: {e}")
+        print(f"שגיאה בהפעלת הצינטוק: {e}")
+    return False
 
 
 def main():
@@ -201,12 +220,13 @@ def main():
     files = data.get("files", []) or data.get("data", [])
     new_files_processed_count = 0
 
-    for item in files:
-        file_name = item.get("name") if isinstance(item, dict) else str(item)
-        if not file_name or file_name.endswith((".ini", ".ymgr")):
+    for file in files:
+        file_name = file.get("name") if isinstance(file, dict) else str(file)
+        if not file_name or file_name.endswith(".ini") or file_name.endswith(".ymgr"):
             continue
         if not (
-            file_name.endswith((".wav", ".mp3"))
+            file_name.endswith(".wav")
+            or file_name.endswith(".mp3")
             or file_name.isdigit()
             or file_name.startswith("wav.")
         ):
@@ -217,39 +237,37 @@ def main():
         print(f"\n--- מטפל בהודעה קולית חדשה: {file_name} ---")
         local_audio = download_file_from_yemot(token, file_name)
         if not local_audio:
-            print(f"לא הצלחתי להוריד את הקובץ {file_name}; הוא לא יסומן כמעובד.")
+            print(f"לא הצלחתי להוריד את הקובץ {file_name}; הוא לא סומן כמעובד.")
             continue
 
         try:
             raw_text = transcribe_audio_with_groq(local_audio)
             if not raw_text:
-                print(f"התמלול נכשל עבור {file_name}; הקובץ לא יסומן כמעובד.")
+                print(f"לא התקבל תמלול עבור {file_name}; הוא לא סומן כמעובד.")
                 continue
 
             print(f"תמלול גולמי: {raw_text}")
             analysis = analyze_and_process_text(raw_text)
             is_approved = analysis.get("approved", False)
             final_text = analysis.get("processed_text") or raw_text
+
             target_folder = "1" if is_approved else "0/1"
-            print(f"טקסט לאחר עיבוד: {final_text}")
-            print(f"תוצאת ניתוח תוכן (אושר לשלוחה 1?): {is_approved}")
             print(f"יעד העלאה נבחר: שלוחה {target_folder}")
 
             if upload_tts_to_yemot(token, final_text, target_folder):
                 save_processed_file(file_name)
                 processed_files.append(file_name)
                 new_files_processed_count += 1
-                print(f"הקובץ {file_name} עובד והועלה בהצלחה.")
             else:
-                print(f"העלאת הטקסט של {file_name} נכשלה; הקובץ לא יסומן כמעובד.")
+                print(f"העלאת הטקסט נכשלה עבור {file_name}; הקובץ לא סומן כמעובד.")
         finally:
             if os.path.exists(local_audio):
                 os.remove(local_audio)
 
-    # אם אכן הועלו הודעות חדשות בריצה זו, נפעיל את שלוחה 200.
+    # מפעילים צינטוק רק אם לפחות הודעה אחת הועלתה בהצלחה.
     if new_files_processed_count > 0:
-        print("נוספו קבצים חדשים, מפעיל את שלוחה 200 לצינטוק...")
-        trigger_extension_200(token)
+        print("הודעות חדשות הועלו בהצלחה, מנסה להפעיל צינטוק...")
+        trigger_tzintuk(token)
     else:
         print("לא נמצאו הודעות חדשות שעובדו והועלו בהצלחה בריצה זו.")
 
