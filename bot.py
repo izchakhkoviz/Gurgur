@@ -143,28 +143,33 @@ def analyze_and_process_text(text):
     client = Groq(api_key=GROQ_API_KEY)
     prompt = f"""
 אתה עורך ראשי בקו "חדשות גור". 
-תפקידך לתקן שגיאות כתיב ולהחליט האם ההודעה קשורה לחסידות גור, לאדמו"ר, לתפילות או למוסדות הקהילה.
+תפקידך לתקן שגיאות כתיב, להשלים מילים לא ברורות לפי ההקשר, ולסנן הודעות עבור חסידות גור.
+
+כללי החלטה עבור approved (true או false):
+1. החזר `true` אם ההודעה עוסקת בחסידות גור, באדמו"ר, בזמני תפילות (שחרית, מנחה, מעריב), במוסדות, או בשמחות אנ"ש.
+2. החזר `false` אם ההודעה מכילה ביקורת נגד הקו או נגד משה לייב פרידמן, או שאינה קשורה לחסידות כלל.
 
 החזר תשובה במבנה JSON בלבד:
 {{
   "approved": true או false,
-  "processed_text": "הטקסט המתוקן"
+  "processed_text": "הטקסט המתוקן, המנוקה והמוכן לקריינות"
 }}
 
-הטקסט:
+הטקסט הגולמי לתקינה וניתוח:
 {text}
 """
     try:
         completion = client.chat.completions.create(
-            # שימוש במודל הקל והזמין ביותר לטקסט ב-Groq
             model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
             response_format={"type": "json_object"}
         )
-        return json.loads(completion.choices[0].message.content)
+        result = json.loads(completion.choices[0].message.content)
+        return result
     except Exception as e:
         print(f"שגיאה בניתוח AI: {e}")
+        # מנגנון גיבוי חכם במקרה תקלה זמנית
         is_gour = any(k in text for k in ["גור", "רבי", "אדמו", "שחרית", "מנחה", "מעריב", "שנדובק", "שטרנבוך"])
         return {"approved": is_gour, "processed_text": text}
 
@@ -192,11 +197,18 @@ def main():
         if local_audio:
             raw_text = transcribe_audio_with_groq(local_audio)
             if raw_text:
+                print(f"תמלול גולמי: {raw_text}")
+                
                 analysis = analyze_and_process_text(raw_text)
                 is_approved = analysis.get("approved", False)
                 final_text = analysis.get("processed_text", raw_text)
                 
+                print(f"טקסט מעובד ומתוקן ע\"י AI: {final_text}")
+                print(f"תוצאת ניתוח AI (אושר לשלוחה 1?): {is_approved}")
+                
                 target_folder = "1" if is_approved else "0/1"
+                print(f"יעד העלאה נבחר: שלוחה {target_folder}")
+                
                 upload_tts_to_yemot(token, final_text, target_folder)
             
             if os.path.exists(local_audio):
