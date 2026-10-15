@@ -5,12 +5,12 @@ SYSTEM = "0772023014"
 TOKEN = f"{SYSTEM}:{os.environ['YEMOT_PASSWORD']}"
 API = "https://www.call2all.co.il/ym/api"
 IN_EXT = "2"
-OUT_EXT = "1"           # שלוחה 1: עדכוני חדשות שוטפים של חסידות גור
-UNRELATED_EXT = "0/1"   # שלוחה 0/1: שלוחת ניהול אישית לכל שאר ההודעות
+OUT_EXT = "1"           # שלוחה 1: אך ורק עדכוני חדשות שוטפים של חסידות גור
+UNRELATED_EXT = "0/1"   # שלוחה 0/1: שלוחת ניהול אישית (לכל שאר הדיווחים)
 
 STATE_PATH = "ivr2:/9/state.json"
 STT_MODEL = "whisper-large-v3-turbo"
-STATE_VERSION = 27      # גרסה 27: גיבוי תמלול מקורי במקרה שהניסוח ריק
+STATE_VERSION = 25      # גרסה 25: ניסוח טקסט ישיר ללא מעטפת JSON ומניעת פסילות שווא
 
 BLOCKED_NAMES = ["מוישי", "משה לייב פרידמן", "משה ליב פרידמן", "משה לייב פריידמן"]
 HOLD_SENSITIVE = True
@@ -18,10 +18,12 @@ MAX_AGE_H = 24
 
 RULES = ("אתה עורך חדשות ראשי בכיר בקו טלפוני חסידי מוביל. "
          "תפקידך לקחת את התמלול והנתונים שהעביר המאזין ולנסח אותם כמבזק חדשות טלפוני קולח, ברור ומקצועי. "
+         "אם בתמלול מופיעה מילה לא ברורה או שגיאת תמלול – תתקן אותה לפי ההקשר הלוגי של המשפט. "
          "הקפד על לשון נקייה ומכובדת, ושמור על כבוד כ\"ק מרן אדמו\"ר שליט\"א והחצר החסידית. "
-         "החזר אך ורק את טקסט הידיעה המנוסח.")
+         "החזר אך ורק את טקסט הידיעה המנוסח, ללא פתיחים, ללא JSON וללא הערות נוספות.")
 
 client = Groq(api_key=os.environ["GROQ_API_KEY"])
+
 PREFERRED = ["openai/gpt-oss-20b", "qwen/qwen3.8-27b", "openai/gpt-oss-120b"]
 
 def pick_model():
@@ -30,25 +32,32 @@ def pick_model():
         for m in PREFERRED:
             if m in ids:
                 return m
-    except Exception:
-        pass
+    except Exception as e:
+        print("models list fail", e)
     return PREFERRED[0]
 
 LLM_MODEL = pick_model()
 print("LLM model:", LLM_MODEL)
 
 def ask(system, user):
+    r = client.chat.completions.create(
+        model=LLM_MODEL,
+        messages=[{"role": "system", "content": system},
+                  {"role": "user", "content": user}],
+        max_tokens=300)
+    time.sleep(3)
+    return r.choices[0].message.content or ""
+
+def jparse(t):
     try:
-        r = client.chat.completions.create(
-            model=LLM_MODEL,
-            messages=[{"role": "system", "content": system},
-                      {"role": "user", "content": user}],
-            max_tokens=300)
-        time.sleep(2)
-        return r.choices[0].message.content or ""
-    except Exception as e:
-        print("LLM error:", e)
-        return ""
+        t = re.sub(r"```(json)?", "", t).strip()
+        start = t.find("{")
+        end = t.rfind("}")
+        if start != -1 and end != -1:
+            return json.loads(t[start:end + 1])
+    except Exception:
+        pass
+    return {}
 
 # ---------- ימות ----------
 def y_list(ext):
@@ -83,7 +92,7 @@ def load_state():
     last_3 = all_files[-3:] if len(all_files) >= 3 else all_files
     seen_files = [f for f in all_files if f not in last_3]
 
-    print(f"עיבוד מחדש בגרסה 27 של הקבצים: {last_3}")
+    print(f"עיבוד מחדש בגרסה 25 של הקבצים: {last_3}")
 
     return {
         "v": STATE_VERSION,
@@ -103,6 +112,17 @@ def transcribe(raw):
     r = client.audio.transcriptions.create(file=("a.wav", raw), model=STT_MODEL, language="he")
     return getattr(r, "text", r)
 
+def triage(text):
+    p = ('נתח הודעת מאזין לקו חדשות. החזר JSON בלבד:\n'
+         '{\n'
+         '  "empty": bool (שקט או רעש מוחלט בלבד),\n'
+         '  "against_system": bool (פגיעה, זלזול, ביקורת או קללה נגד הנהלת/מערכת הקו),\n'
+         '  "sensitive": bool (דיווח על פטירה, פציעה קשה או פיגוע בלבד),\n'
+         '  "related_to_gur": bool (האם מדובר בעדכון שקשור באופן ישיר לחסידות גור)\n'
+         '}\n\nהודעה:\n' + text)
+    res = jparse(ask("אתה עורך תוכן חסידי.", p))
+    return res
+
 def norm(t):
     return " ".join(re.sub(r"[^\u05d0-\u05ea ]", " ", t).split())
 
@@ -114,9 +134,9 @@ def analyze_audio(raw):
         return {"blocked_name": True}
     if len(t) < 4:
         return {"empty": True}
-
-    is_gur = any(k in text for k in ["גור", "אדמור", "חסידי", "חסידות", "בית מדרש", "שטיבל"])
-    return {"empty": False, "raw_text": text, "related_to_gur": is_gur}
+    m = triage(text)
+    m["raw_text"] = text
+    return m
 
 def is_quota(e):
     return "429" in str(e) or "rate_limit" in str(e).lower()
@@ -124,13 +144,9 @@ def is_quota(e):
 def write_story_single(item):
     raw_text = item.get("raw_text", "")
     p = (f"תמלול המאזין:\n{raw_text}\n\n"
-         "נסח את הידיעה כמבזק חדשות אקטואלי, קולח וברור להקראה טלפונית. "
-         "תקן שגיאות תמלול לפי ההקשר. החזר אך ורק את הניסוח הסופי.")
-    res = ask(RULES, p).strip()
-    # גיבוי: אם הניסוח מסיבה כלשהי ריק, נשתמש ישירות בתמלול המקורי של המאזין!
-    if not res or len(res) < 3:
-        return raw_text
-    return res
+         "נסח את הידיעה/הנתונים כמבזק חדשות אקטואלי, קולח וברור להקראה טלפונית. "
+         "תקן מילים לא ברורות לפי ההקשר הלוגי. החזר אך ורק את הניסוח הסופי.")
+    return ask(RULES, p).strip()
 
 # ---------- ריצה ----------
 def main():
@@ -153,17 +169,19 @@ def main():
             if s["fails"][name] >= 3:
                 s["seen"].append(name)
             continue
-
         s["seen"].append(name)
         if m.get("blocked_name"):
             print("msg", name, "שם-חסום-נחסם")
             continue
-        if m.get("empty"):
-            print("msg", name, "ריק")
+        hold = bool(m.get("sensitive")) and HOLD_SENSITIVE
+        print("msg", name,
+              "ריק" if m.get("empty") else "",
+              "נגד-המערכת-נחסם" if m.get("against_system") else "",
+              "רגיש-ממתין-לאישור" if hold else "")
+        if m.get("empty") or m.get("against_system"):
             continue
-
         m.update(id=name, ts=now)
-        s["pending"].append(m)
+        (s["held"] if hold else s["pending"]).append(m)
 
     s["pending"] = [p for p in s["pending"] if now - p["ts"] < MAX_AGE_H * 3600]
 
@@ -178,6 +196,10 @@ def main():
                 print("write fail for", item["id"], e)
                 if is_quota(e):
                     quota_hit = True
+                continue
+
+            if not text_out or len(text_out) < 5:
+                print("ניסוח ריק עבור:", item["id"])
                 continue
 
             is_gur = item.get("related_to_gur", False)
@@ -200,6 +222,8 @@ def main():
 
     if quota_hit:
         print("QUOTA: המכסה החינמית נגמרה, ננסה שוב בהרצה הבאה")
+    if s["held"]:
+        print("ממתינות לאישור ידני:", len(s["held"]))
     save_state(s)
 
 if __name__ == "__main__":
