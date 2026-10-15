@@ -10,10 +10,20 @@ PHONE_SYSTEM_DID = os.environ.get("PHONE_SYSTEM_DID")
 
 client = Groq(api_key=GROQ_API_KEY)
 
+def clean_path(path):
+    """מנקה סלאשים מובילים ומיותרים כדי למנוע שגיאות WS name"""
+    if not path:
+        return ""
+    path = str(path).strip()
+    while path.startswith('/'):
+        path = path[1:]
+    return path
+
 def get_next_folder_index(folder_path):
     """מציאת המספר הסידורי הפנוי הבא בשלוחת היעד"""
     try:
-        url = f"https://www.call2all.co.il/ym/api/GetIVR2?token={YEMOT_TOKEN}&what=folder&folder={folder_path}"
+        folder = clean_path(folder_path)
+        url = f"https://www.call2all.co.il/ym/api/GetIVR2?token={YEMOT_TOKEN}&folder={folder}"
         response = requests.get(url)
         data = response.json()
         if data.get("responseStatus") == "OK":
@@ -30,7 +40,6 @@ def get_next_folder_index(folder_path):
 
 def download_audio_file(file_name, local_filename="temp_audio.wav"):
     """הורדת קובץ השמע משלוחה 2 בימות המשיח"""
-    # שימוש בנתיב נקי ללא סלאש מוביל כדי למנוע חסימה
     download_url = f"https://www.call2all.co.il/ym/api/DownloadFile?token={YEMOT_TOKEN}&path=2/{file_name}"
     try:
         res = requests.get(download_url, stream=True)
@@ -95,18 +104,20 @@ def analyze_and_classify_with_llm(text_content):
         return "REGULAR"
 
 def move_file_in_yemot(source_file_path, target_folder):
-    """העברת קובץ בשרתי ימות המשיח עם מספור אוטומטי מתקדם"""
+    """העברת קובץ בשרתי ימות המשיח"""
     next_index = get_next_folder_index(target_folder)
     file_extension = source_file_path.split('.')[-1]
     target_file_name = f"{next_index:03d}.{file_extension}"
     
-    # שימוש בפורמט נקי ללא סלאשים מובילים מיותרים
-    url = f"https://www.call2all.co.il/ym/api/MoveFile?token={YEMOT_TOKEN}&source={source_file_path}&target={target_folder}/{target_file_name}"
+    clean_target = clean_path(target_folder)
+    clean_source = clean_path(source_file_path)
+    
+    url = f"https://www.call2all.co.il/ym/api/MoveFile?token={YEMOT_TOKEN}&source={clean_source}&target={clean_target}/{target_file_name}"
     try:
         response = requests.get(url)
         res_data = response.json()
         if res_data.get("responseStatus") == "OK":
-            print(f"הקובץ הועבר בהצלחה ל-{target_folder}/{target_file_name}")
+            print(f"הקובץ הועבר בהצלחה ל-{clean_target}/{target_file_name}")
             return True
         else:
             print(f"שגיאה בהעברת הקובץ בימות המשיח: {res_data}")
@@ -126,8 +137,13 @@ def trigger_tzintuk(extension):
 def process_voice_messages():
     print("מתחיל סריקה, תמלול ועיבוד הודעות בשלוחה 2...")
     
-    # פנייה נקייה לשלוחה 2 בלי סלאש
-    files_url = f"https://www.call2all.co.il/ym/api/GetIVR2?token={YEMOT_TOKEN}&what=folder&folder=2"
+    # הדפסת בדיקה לווידוא שהטוקן אינו ריק
+    if not YEMOT_TOKEN:
+        print("שגיאה קריטית: YEMOT_TOKEN אינו מוגדר ב-GitHub Secrets!")
+        return
+
+    # פנייה נקייה לשלוחה 2
+    files_url = f"https://www.call2all.co.il/ym/api/GetIVR2?token={YEMOT_TOKEN}&folder=2"
     res = requests.get(files_url)
     data = res.json()
     
