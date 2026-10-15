@@ -45,7 +45,8 @@ def save_processed_file(file_name):
             json.dump(processed, f, ensure_ascii=False, indent=4)
 
 def get_ivr2_files(token, folder_path="2"):
-    url = "https://call2all.co.il/ym/api/GetIVR2Dir"
+    """קריאת הקבצים בשלוחה ספציפית באמצעות GetIVR2"""
+    url = "https://call2all.co.il/ym/api/GetIVR2"
     params = {
         "token": token,
         "path": str(folder_path).strip("/")
@@ -157,29 +158,28 @@ def main():
         print("שגיאה קריטית: לא ניתן להנפיק טוקן התחברות!")
         return
 
-    print("התחברות הצליחה! מתחיל סריקה של שלוחה 2...")
+    print("התחברות הצליחה! סורק את שלוחה 2...")
     processed_files = load_processed_files()
     data = get_ivr2_files(token, "2")
     
     if not data or data.get("responseStatus") != "OK":
-        print(f"שגיאה בגישה לשלוחה 2 או שהתשובה ריקה: {data}")
+        print(f"שגיאה בגישה לשלוחה 2: {data}")
         return
 
-    # הדפסת התשובה המלאה כדי לראות בדיוק מה השרת מחזיר בלוגים של GitHub
-    print(f"תשובת השרת הגולמית: {data}")
-
-    # בדיקת מפתחות אפשריים שונים לתשובה של ימות המשיח
-    files = data.get("files", []) or data.get("ivr2", []) or data.get("data", [])
-    print(f"נמצאו {len(files)} פריטים/קבצים בשלוחה.")
+    files = data.get("files", [])
+    print(f"נמצאו {len(files)} קבצים בשלוחה 2.")
     
     for file in files:
-        # ימות המשיח לפעמים מחזירים מחרוזת פשוטה או אובייקט
-        file_name = file if isinstance(file, str) else (file.get("name") or file.get("file"))
+        file_name = file.get("name") if isinstance(file, dict) else str(file)
         
-        if not file_name or file_name.endswith(".ini") or file_name.endswith(".ymgr") or file_name in processed_files:
+        # סינון: נעבוד רק על קבצי שמע של הקלטות (שמתחילים ב-wav. או כוללים מספרים רצים כמו 001, 007 וכדומה)
+        if not file_name or not (file_name.startswith("wav.") or file_name.isdigit() or len(file_name.split(".")[0]) <= 4):
             continue
             
-        print(f"\nמטפל בהודעה חדשה: {file_name}")
+        if file_name in processed_files:
+            continue
+            
+        print(f"\nמטפל בהודעה חדשה בשלוחה 2: {file_name}")
         
         local_audio = download_file_from_yemot(token, file_name)
         if local_audio:
