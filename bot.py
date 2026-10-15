@@ -48,15 +48,9 @@ def save_processed_file(file_name):
 def get_ivr2_files(token, folder_path="2"):
     """שליפת רשימת הקבצים משלוחה"""
     url = "https://call2all.co.il/ym/api/GetIVR2"
-    
-    # ניקוי הנתיב לפורמט הנדרש על ידי ימות המשיח
-    clean_path = str(folder_path).strip('/')
-    if not clean_path.startswith("ivr2:"):
-        clean_path = f"ivr2:{clean_path}" if clean_path else "ivr2:2"
-
     params = {
         "token": token,
-        "path": clean_path
+        "path": str(folder_path)
     }
     try:
         response = requests.get(url, params=params)
@@ -71,7 +65,7 @@ def download_file_from_yemot(token, file_name, dest_path="temp_audio.wav"):
     url = "https://call2all.co.il/ym/api/DownloadFile"
     params = {
         "token": token,
-        "path": f"ivr2:2/{file_name}"
+        "path": f"2/{file_name}"
     }
     try:
         response = requests.get(url, params=params)
@@ -86,11 +80,9 @@ def download_file_from_yemot(token, file_name, dest_path="temp_audio.wav"):
 def upload_file_to_yemot(token, file_path, target_folder, target_file_name):
     """העלאת קובץ שמע לשלוחה המיועדת (1 או 0/1)"""
     url = "https://call2all.co.il/ym/api/UploadFile"
-    clean_folder = str(target_folder).strip('/')
-    
     params = {
         "token": token,
-        "path": f"ivr2:{clean_folder}/{target_file_name}"
+        "path": f"{target_folder}/{target_file_name}"
     }
     
     try:
@@ -186,7 +178,7 @@ def main():
     for file in files:
         file_name = file.get("name")
         
-        # דילוג על קבצי הגדרות ולוגים של ימות המשיח
+        # דילוג על קובצי מערכת ולוגים
         if not file_name or file_name.endswith(".ini") or file_name.endswith(".ymgr") or file_name in processed_files:
             continue
             
