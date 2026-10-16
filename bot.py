@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import subprocess
 import difflib
@@ -9,9 +10,6 @@ from groq import Groq
 YEMOT_USERNAME = os.getenv("PHONE_SYSTEM_DID")
 YEMOT_PASSWORD = os.getenv("YEMOT_PASSWORD")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
-# מודל השפה לסינון ותיקון (אפשר להחליף דרך משתנה סביבה GROQ_MODEL)
-GROQ_LLM_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 PROCESSED_FILES_LOG = "processed_files.json"
 
@@ -293,27 +291,109 @@ def build_user_message(text, history):
     return f"הודעות שכבר עלו לשלוחה 1 לאחרונה:\n{previous}\n\nהתמלול החדש:\n{text}"
 
 
-def ai_review_text(text, history):
-    """שולח את התמלול למודל שפה. מחזיר dict, או None אם הקריאה/הפענוח נכשלו."""
-    client = Groq(api_key=GROQ_API_KEY)
+# סדר העדפה למודלים (הבוט בודק מול Groq מה באמת זמין בחשבון שלך ובוחר אוטומטית)
+PREFERRED_MODELS = [
+    "openai/gpt-oss-120b",
+    "llama-3.3-70b-versatile",
+    "openai/gpt-oss-20b",
+    "llama-3.1-8b-instant",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+]
+NON_CHAT_MARKERS = ("whisper", "guard", "tts", "orpheus", "playai", "embed", "compound", "safeguard")
+MAX_MODEL_ATTEMPTS = 6
+
+_chosen_model = None
+
+
+def list_available_models(client):
+    """שואל את Groq אילו מודלים זמינים בחשבון, ומסנן מודלי שמע/אבטחה."""
     try:
-        completion = client.chat.completions.create(
-            model=GROQ_LLM_MODEL,
-            temperature=0,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": AI_SYSTEM_PROMPT},
-                {"role": "user", "content": build_user_message(text, history)},
-            ],
-        )
-        result = json.loads(completion.choices[0].message.content)
+        ids = [m.id for m in client.models.list().data]
+    except Exception as e:
+        print(f"לא הצלחתי לקבל רשימת מודלים מ-Groq: {e}")
+        return []
+    return [i for i in ids if not any(mark in i.lower() for mark in NON_CHAT_MARKERS)]
+
+
+def candidate_models(client):
+    available = list_available_models(client)
+    print(f"מודלים זמינים בחשבון: {available}")
+    candidates = []
+    env_model = os.getenv("GROQ_MODEL")
+    if env_model:
+        candidates.append(env_model)
+    if available:
+        candidates += [m for m in PREFERRED_MODELS if m in available]
+        candidates += available
+    else:
+        candidates += PREFERRED_MODELS
+    seen = []
+    for m in candidates:
+        if m not in seen:
+            seen.append(m)
+    return seen[:MAX_MODEL_ATTEMPTS]
+
+
+def parse_json_response(content):
+    """מחלץ JSON מתשובת המודל, גם אם עטף אותה בטקסט, בגדרות קוד או בתגיות חשיבה."""
+    content = re.sub(r"<think>.*?</think>", "", content or "", flags=re.S).strip()
+    content = re.sub(r"^```(?:json)?|```$", "", content.strip(), flags=re.M).strip()
+    first, last = content.find("{"), content.rfind("}")
+    if first == -1 or last == -1:
+        raise ValueError("לא נמצא JSON בתשובה")
+    return json.loads(content[first:last + 1])
+
+
+def call_llm(client, model, messages):
+    kwargs = {"model": model, "temperature": 0, "messages": messages}
+    try:
+        return client.chat.completions.create(response_format={"type": "json_object"}, **kwargs)
+    except Exception as e:
+        msg = str(e).lower()
+        if "response_format" in msg or "json" in msg:
+            # חלק מהמודלים לא תומכים במצב JSON, מנסים בלעדיו
+            return client.chat.completions.create(**kwargs)
+        raise
+
+
+def try_model(client, model, messages):
+    try:
+        completion = call_llm(client, model, messages)
+        result = parse_json_response(completion.choices[0].message.content)
         if not isinstance(result, dict) or not isinstance(result.get("approved"), bool):
-            print(f"תשובת AI במבנה לא תקין: {result}")
+            print(f"המודל {model} החזיר מבנה לא תקין: {result}")
             return None
         return result
     except Exception as e:
-        print(f"שגיאה בניתוח AI: {e}")
+        print(f"המודל {model} נכשל: {e}")
         return None
+
+
+def ai_review_text(text, history):
+    """שולח את התמלול למודל שפה. מחזיר dict, או None אם כל הניסיונות נכשלו."""
+    global _chosen_model
+    client = Groq(api_key=GROQ_API_KEY)
+    messages = [
+        {"role": "system", "content": AI_SYSTEM_PROMPT},
+        {"role": "user", "content": build_user_message(text, history)},
+    ]
+
+    # קודם המודל שכבר עבד בהודעה קודמת
+    if _chosen_model:
+        result = try_model(client, _chosen_model, messages)
+        if result:
+            return result
+        _chosen_model = None
+
+    for model in candidate_models(client):
+        result = try_model(client, model, messages)
+        if result:
+            _chosen_model = model
+            print(f"מודל AI בשימוש: {model}")
+            return result
+
+    print("אף מודל לא החזיר תשובה תקינה")
+    return None
 
 
 def is_correction_safe(original, corrected):
