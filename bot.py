@@ -1,6 +1,8 @@
 import os
 import json
 import subprocess
+import difflib
+from datetime import datetime, timezone, timedelta
 import requests
 from groq import Groq
 
@@ -12,6 +14,12 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_LLM_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 PROCESSED_FILES_LOG = "processed_files.json"
+
+# היסטוריית ההודעות שכבר עלו לשלוחה 1 (לזיהוי הודעות כפולות)
+HISTORY_FILE = "approved_history.json"
+HISTORY_MAX_ITEMS = 25          # כמה הודעות אחרונות לזכור
+HISTORY_MAX_AGE_HOURS = 48      # הודעות ישנות יותר נשכחות
+DUPLICATE_SIMILARITY = 0.85     # דמיון טקסטואלי גבוה = הודעה כפולה
 
 # רשת ביטחון: אם אחת המילים האלה מופיעה, ההודעה נפסלת מיד, בלי קשר ל-AI
 BAD_KEYWORDS = [
@@ -51,14 +59,68 @@ AI_SYSTEM_PROMPT = """אתה עורך ומסנן הודעות קוליות עב�
    - אם מילה לא ברורה ואי אפשר להבין מההקשר מה הייתה, אל תנחש:
      השאר אותה כפי שהיא ורשום אותה ב-unclear_words.
 
+3. כפילות: בהודעת המשתמש תקבל גם רשימה של הודעות שכבר עלו לשלוחה 1 לאחרונה.
+   - אם ההודעה החדשה היא אותה הודעה או אותו עדכון (גם בניסוח אחר) ולא מוסיפה
+     מידע חדש מהותי, סמן is_duplicate=true.
+   - אם יש בה מידע חדש או שונה (שעה אחרת, מקום אחר, פרט חדש, עדכון או ביטול
+     של הודעה קודמת), היא לא כפולה: is_duplicate=false.
+   - אם אין הודעות קודמות ברשימה, is_duplicate=false.
+
 החזר אך ורק JSON במבנה הבא:
 {
   "approved": true או false,
+  "is_duplicate": true או false,
+  "duplicate_reason": "אם כפולה: איזו הודעה קודמת היא משכפלת, אחרת ריק",
   "reason": "סיבה קצרה בעברית",
   "corrected_text": "הטקסט אחרי תיקון וליטוש",
   "corrections": ["מילה מקורית -> מילה מתוקנת"],
   "unclear_words": ["מילים שלא היה ברור מה הן"]
 }"""
+
+
+def load_history():
+    """טוען את היסטוריית ההודעות שעלו לשלוחה 1, ומנקה ישנות."""
+    if not os.path.exists(HISTORY_FILE):
+        return []
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, list):
+            return []
+    except Exception:
+        return []
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=HISTORY_MAX_AGE_HOURS)
+    fresh = []
+    for item in data:
+        try:
+            when = datetime.fromisoformat(item["time"])
+            if when >= cutoff and item.get("text"):
+                fresh.append(item)
+        except Exception:
+            continue
+    return fresh[-HISTORY_MAX_ITEMS:]
+
+
+def save_history(history):
+    history = history[-HISTORY_MAX_ITEMS:]
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
+
+
+def add_to_history(history, text):
+    history.append({"time": datetime.now(timezone.utc).isoformat(), "text": text})
+    del history[:-HISTORY_MAX_ITEMS]
+    save_history(history)
+
+
+def find_similar_in_history(text, history):
+    """זיהוי כפילות לפי דמיון טקסטואלי גבוה. מחזיר את ההודעה הדומה או None."""
+    for item in history:
+        ratio = difflib.SequenceMatcher(None, text.strip(), item["text"].strip()).ratio()
+        if ratio >= DUPLICATE_SIMILARITY:
+            return item
+    return None
 
 
 def get_yemot_token():
@@ -100,6 +162,8 @@ def save_and_commit_processed_file(file_name):
             subprocess.run(["git", "config", "--global", "user.name", "github-actions[bot]"], check=False)
             subprocess.run(["git", "config", "--global", "user.email", "github-actions[bot]@users.noreply.github.com"], check=False)
             subprocess.run(["git", "add", PROCESSED_FILES_LOG], check=False)
+            if os.path.exists(HISTORY_FILE):
+                subprocess.run(["git", "add", HISTORY_FILE], check=False)
             subprocess.run(["git", "commit", "-m", f"Automated update processed files: {file_name}"], check=False)
 
             github_token = os.getenv("GITHUB_TOKEN")
@@ -220,7 +284,16 @@ def find_bad_keyword(text):
     return None
 
 
-def ai_review_text(text):
+def build_user_message(text, history):
+    if history:
+        lines = [f"{i}. {item['text'][:400]}" for i, item in enumerate(history, 1)]
+        previous = "\n".join(lines)
+    else:
+        previous = "(אין הודעות קודמות)"
+    return f"הודעות שכבר עלו לשלוחה 1 לאחרונה:\n{previous}\n\nהתמלול החדש:\n{text}"
+
+
+def ai_review_text(text, history):
     """שולח את התמלול למודל שפה. מחזיר dict, או None אם הקריאה/הפענוח נכשלו."""
     client = Groq(api_key=GROQ_API_KEY)
     try:
@@ -230,7 +303,7 @@ def ai_review_text(text):
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": AI_SYSTEM_PROMPT},
-                {"role": "user", "content": f"התמלול:\n{text}"},
+                {"role": "user", "content": build_user_message(text, history)},
             ],
         )
         result = json.loads(completion.choices[0].message.content)
@@ -251,7 +324,7 @@ def is_correction_safe(original, corrected):
     return 0.5 <= ratio <= 1.5
 
 
-def analyze_and_process_text(text):
+def analyze_and_process_text(text, history=None):
     """
     מחזיר {"approved": bool, "processed_text": str}
     כל מקרה של ספק או כשל מוביל ל-approved=False (בדיקה ידנית בשלוחה 0/1).
@@ -266,8 +339,16 @@ def analyze_and_process_text(text):
         print(f"זוהתה מילת פסילה ('{bad}') - מעביר מיד לשלוחה 0/1")
         return {"approved": False, "processed_text": text}
 
-    # שלב 2: סינון ותיקון על ידי AI
-    review = ai_review_text(text)
+    history = history or []
+
+    # שלב 1.5: בדיקת כפילות מהירה לפי דמיון טקסטואלי
+    similar = find_similar_in_history(text, history)
+    if similar:
+        print(f"הודעה כמעט זהה להודעה שכבר עלתה לשלוחה 1 ({similar['text'][:60]}...) - מועבר לשלוחה 0/1")
+        return {"approved": False, "processed_text": text}
+
+    # שלב 2: סינון, תיקון וזיהוי כפילות על ידי AI
+    review = ai_review_text(text, history)
     if review is None:
         print("ה-AI לא החזיר תשובה תקינה - מועבר לשלוחה 0/1 לבדיקה ידנית")
         return {"approved": False, "processed_text": text}
@@ -288,7 +369,15 @@ def analyze_and_process_text(text):
 
     approved = review["approved"]
 
-    # שלב 3: בדיקה חוזרת של מילות פסילה על הטקסט המתוקן
+    if approved and review.get("is_duplicate") is True:
+        print(f"ה-AI זיהה הודעה כפולה: {review.get('duplicate_reason', '')} - מועבר לשלוחה 0/1")
+        approved = False
+
+    # שלב 3: בדיקה חוזרת על הטקסט המתוקן (מילות פסילה וכפילות)
+    if approved and find_similar_in_history(final_text, history):
+        print("הטקסט המתוקן כמעט זהה להודעה קודמת בשלוחה 1 - מועבר לשלוחה 0/1")
+        approved = False
+
     if approved:
         bad_after = find_bad_keyword(final_text)
         if bad_after:
@@ -314,17 +403,18 @@ def trigger_tzintuk(token):
         print(f"שגיאה בהפעלת הצינטוק: {e}")
 
 
-def process_file(token, file_name):
+def process_file(token, file_name, history):
     """
     מטפל בהודעה אחת.
     מחזיר (done, approved):
       done=True  -> הטיפול הסתיים ואפשר לסמן את הקובץ כמעובד
       done=False -> משהו נכשל (הורדה/תמלול/העלאה), הקובץ ינוסה שוב בריצה הבאה
+    text הוא הטקסט שהועלה בפועל.
     """
     local_audio = download_file_from_yemot(token, file_name)
     if not local_audio:
         print(f"הורדת {file_name} נכשלה - לא מסומן כמעובד, ינוסה שוב.")
-        return False, False
+        return False, False, None
 
     try:
         raw_text = transcribe_audio_with_groq(local_audio)
@@ -334,15 +424,15 @@ def process_file(token, file_name):
 
     if raw_text is None:
         print(f"תמלול {file_name} נכשל - לא מסומן כמעובד, ינוסה שוב.")
-        return False, False
+        return False, False, None
 
     if not raw_text.strip():
         print(f"{file_name}: לא זוהה דיבור בהקלטה, מדלג.")
-        return True, False
+        return True, False, None
 
     print(f"תמלול גולמי: {raw_text}")
 
-    analysis = analyze_and_process_text(raw_text)
+    analysis = analyze_and_process_text(raw_text, history)
     is_approved = analysis["approved"]
     final_text = analysis["processed_text"]
 
@@ -351,9 +441,9 @@ def process_file(token, file_name):
 
     if not upload_tts_to_yemot(token, final_text, target_folder):
         print(f"העלאת {file_name} נכשלה - לא מסומן כמעובד, ינוסה שוב.")
-        return False, False
+        return False, False, None
 
-    return True, is_approved
+    return True, is_approved, final_text
 
 
 def main():
@@ -362,6 +452,8 @@ def main():
         return
 
     processed_files = load_processed_files()
+    history = load_history()
+    print(f"היסטוריית שלוחה 1: {len(history)} הודעות אחרונות")
     print(f"קבצים שכבר עובדו בעבר ({len(processed_files)} קבצים)")
 
     data = get_ivr2_files(token, "2")
@@ -384,11 +476,12 @@ def main():
 
         print(f"\n--- מטפל בהודעה קולית חדשה: {file_name} ---")
 
-        done, approved = process_file(token, file_name)
+        done, approved, uploaded_text = process_file(token, file_name, history)
         if done:
-            save_and_commit_processed_file(file_name)
             if approved:
+                add_to_history(history, uploaded_text)
                 approved_to_folder_1_count += 1
+            save_and_commit_processed_file(file_name)
 
     if approved_to_folder_1_count > 0:
         print("הודעה אושרה לשלוחה 1, מפעיל צינטוק בשלוחה 200...")
