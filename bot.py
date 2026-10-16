@@ -41,10 +41,14 @@ AI_SYSTEM_PROMPT = """אתה עורך ומסנן הודעות קוליות עב�
 
    רק במקרים הבאים ההודעה לא מאושרת (approved=false) ועוברת לבדיקה ידנית של מנהל הקו:
    - תוכן נגד המערכת או הקו, נגד מפעיל הקו, או ביקורת עליהם
-   - הודעות על חתנים, אירוסין, ווארט, פשנדווארט ודומיהם
+   - כל הודעה שקשורה לחתנים, אירוסין, ווארט, פשנדווארט ודומיהם, גם אם הקשר עקיף
+     או היסטורי (למשל הודעה על מי שהיה חתן, התארס או עומד להתחתן), וגם אם
+     ההודעה קשורה לחסידות גור
    - תוכן נגד חסידות גור, נגד האדמו"ר או נגד אנשי שלומנו, או תוכן מזלזל ופוגעני
    - הודעה שאין לה שום קשר לחסידות גור, פרסומת, או הודעה ריקה / חסרת משמעות
-   אם יש ספק אמיתי האם ההודעה פוגענית, נגד המערכת או שייכת לחתנים: approved=false.
+   הנושאים שלעיל פוסלים גם הודעה שנוגעת בהם באופן חלקי או עקיף, בלי קשר לשאלה
+   אם יש בה גם קשר לגור. אם יש ספק אמיתי האם ההודעה פוגענית, נגד המערכת או
+   נוגעת בנושא החתנים: approved=false.
    אבל אל תפסול רק בגלל שהקשר לגור חלש או עקיף, קשר כזה מספיק לאישור.
 
 2. ניסוח: הפוך את התמלול לטקסט מדויק וברור שמתאים להקראה בקו.
@@ -63,6 +67,22 @@ AI_SYSTEM_PROMPT = """אתה עורך ומסנן הודעות קוליות עב�
    - אם יש בה מידע חדש או שונה (שעה אחרת, מקום אחר, פרט חדש, עדכון או ביטול
      של הודעה קודמת), היא לא כפולה: is_duplicate=false.
    - אם אין הודעות קודמות ברשימה, is_duplicate=false.
+
+4. הבנת לשון הקודש כפי שחסידי גור מדברים אותה: הדוברים הם חסידי גור שמדברים
+   עברית ולשון קודש בהגייה אשכנזית-חסידית, בשילוב ביטויי יידיש ותארים קבועים.
+   התמלול האוטומטי נוטה לטעות בהם, ולכן:
+   - הגייה אשכנזית עלולה להתמלל בצורה מעוותת (למשל "שבת" שנשמעת "שאבעס",
+     "תורה" שנשמעת "תוירה"). זהה את המילה העברית המקורית לפי ההקשר ותקן אותה.
+   - מונחים וביטויים רגילים בקהילה: שבת קודש, מוצאי שבת, ערב שבת, שלש סעודות,
+     מלווה מלכה, טיש, שטיבל, בית המדרש, קבלת קהל, יחידות, שיעור, מניין,
+     שחרית, מנחה, מעריב, סליחות, ימים נוראים, שמחת תורה, הקפות, עליה לרגל,
+     תיקון חצות, דאווענען, לערנען, גבאי, מקווה, כולל.
+   - תארים וראשי תיבות: שליט"א, זצ"ל, זי"ע, הרה"ק, הגה"צ, ר', הרב, אדמו"ר.
+   - שמות רבותינו, כפי שנהוג לקרוא להם: החידושי הרי"ם, השפת אמת, האמרי אמת,
+     הבית ישראל, הלב שמחה, הפני מנחם, והאדמו"ר שליט"א. אלה שמות, אל תשנה אותם.
+   - מילים ביידיש שהדובר משלב: השאר אותן, אך כתוב אותן באיות נכון באותיות
+     עבריות, ואל תתרגם אותן ואל תחליף את סגנון הדיבור בעברית מודרנית.
+   - אל תהפוך את הטקסט לעברית ספרותית או עכשווית: שמור על לשון הדוברים.
 
 החזר אך ורק JSON במבנה הבא:
 {
@@ -256,6 +276,15 @@ def upload_tts_to_yemot(token, text_content, target_folder):
     return success
 
 
+# רמז לוויספר: אוצר מילים של חסידי גור, כדי לשפר זיהוי מילים בהגייה חסידית
+WHISPER_PROMPT = (
+    "הודעה בעברית בהגייה חסידית של חסידי גור. מונחים: שבת קודש, אדמו\"ר שליט\"א, "
+    "בית המדרש, שטיבל, טיש, מלווה מלכה, שלש סעודות, קבלת קהל, יחידות, שחרית, מנחה, "
+    "מעריב, דאווענען, לערנען, החידושי הרי\"ם, השפת אמת, האמרי אמת, הבית ישראל, "
+    "הלב שמחה, הפני מנחם, זצ\"ל, זי\"ע."
+)
+
+
 def transcribe_audio_with_groq(audio_path):
     """מחזיר טקסט (יכול להיות מחרוזת ריקה אם אין דיבור), או None אם התמלול נכשל."""
     if not GROQ_API_KEY:
@@ -268,8 +297,14 @@ def transcribe_audio_with_groq(audio_path):
                 file=(audio_path, file.read()),
                 model="whisper-large-v3",
                 language="he",
+                prompt=WHISPER_PROMPT,
+                temperature=0,
             )
-        return transcription.text
+        text = transcription.text or ""
+        # הגנה: בהקלטה שקטה וויספר לפעמים מחזיר את הרמז עצמו
+        if text.strip() and text.strip() in WHISPER_PROMPT:
+            return ""
+        return text
     except Exception as e:
         print(f"שגיאה בתמלול: {e}")
         return None
@@ -467,20 +502,32 @@ def analyze_and_process_text(text, history=None):
     return {"approved": approved, "processed_text": final_text}
 
 
+# רשימת הצינתוקים (מספר 2). אפשר לעקוף דרך משתנה סביבה TZINTUK_LIST
+DEFAULT_TZINTUK_LIST = "2"
+# זמן צלצול בשניות (כמו בהגדרה המומלצת במדריך הצינתוקים של ימות)
+TZINTUK_TIMEOUT = "16"
+
+
 def trigger_tzintuk(token):
-    url = "https://call2all.co.il/ym/api/RunCampaign"
-    params = {"token": token, "varName": "200"}
+    """שולח צינתוק (לא קמפיין קולי) לרשימת הצינתוקים דרך RunTzintuk."""
+    list_id = (os.getenv("TZINTUK_LIST") or "").strip() or DEFAULT_TZINTUK_LIST
+    phones = list_id if list_id.startswith(("tzl:", "tpl:")) else f"tzl:{list_id}"
+    params = {"token": token, "phones": phones, "TzintukTimeOut": TZINTUK_TIMEOUT}
+    caller_id = (os.getenv("TZINTUK_CALLER_ID") or "").strip()
+    if caller_id:
+        params["callerId"] = caller_id
+
+    print(f"שולח צינתוק לרשימה: {phones}")
     try:
-        response = requests.get(url, params=params)
+        response = requests.get("https://call2all.co.il/ym/api/RunTzintuk", params=params)
+        print(f"תשובת ימות לצינתוק: {response.text[:300]}")
         data = response.json()
         if data.get("responseStatus") == "OK":
-            print("קמפיין הצינטוקים הופעל בהצלחה דרך שלוחה 200.")
+            print("הצינתוק הופעל בהצלחה.")
         else:
-            alt_url = "https://call2all.co.il/ym/api/GetIVR2Dir"
-            requests.get(alt_url, params={"token": token, "path": "200"})
-            print("שלוחה 200 הופעלה ליזום את הצינטוק.")
+            print("הצינתוק נכשל, ראה את התשובה של ימות למעלה.")
     except Exception as e:
-        print(f"שגיאה בהפעלת הצינטוק: {e}")
+        print(f"שגיאה בהפעלת הצינתוק: {e}")
 
 
 def process_file(token, file_name, history):
@@ -564,7 +611,7 @@ def main():
             save_and_commit_processed_file(file_name)
 
     if approved_to_folder_1_count > 0:
-        print("הודעה אושרה לשלוחה 1, מפעיל צינטוק בשלוחה 200...")
+        print("הודעה אושרה לשלוחה 1, מפעיל צינתוק...")
         trigger_tzintuk(token)
     else:
         print("לא הועברו הודעות חדשות לשלוחה 1 בריצה זו, הצינטוק לא הופעל.")
