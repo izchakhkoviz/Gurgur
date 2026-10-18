@@ -1,10 +1,21 @@
 name: הפעלת בוט לעיבוד קול
 
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('manual-{0}', inputs.call_id) || 'auto' }}
+
 on:
   schedule:
     # הרצה אוטומטית כל 5 דקות
     - cron: '*/5 * * * *'
-  workflow_dispatch: # מאפשר הפעלה ידנית בלחיצת כפתור
+  workflow_dispatch:
+    inputs:
+      call_id:
+        description: 'מזהה שיחה'
+        required: false
+        default: ''
+
+concurrency:
+  group: yemot-bot
+  cancel-in-progress: false
 
 jobs:
   run-bot:
